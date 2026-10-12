@@ -38,9 +38,9 @@ public static class Glyph
     public const string Play = "", Pause = "", Prev = "", Next = "", Music = "";
     public const string Volume = "", Mute = "", Brightness = "", Wifi = "", Bluetooth = "";
     public const string Moon = "", Lock = "", Restart = "", Power = "", Sleep = "";
-    public const string Pulse = "", Sliders = "", Clipboard = "", Tasks = "", Apps = "";
+    public const string Pulse = "", Sliders = "", Clipboard = "", Tasks = "", Apps = "";
     public const string Add = "", Delete = "", Check = "", Bell = "", Copy = "";
     public const string Clear = "", Left = "", Right = "", Battery = "", Charging = "";
     public const string Down = "", Up = "", Clock = "", Disk = "", Calendar = "";
-    public const string Settings = "", Folder = "", Theme = "", Sun = "", Contrast = "";
+    public const string Settings = "", Folder = "", Theme = "", Sun = "", Contrast = "", Notch = "";
 }

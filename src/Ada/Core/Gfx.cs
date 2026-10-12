@@ -28,7 +28,7 @@ public sealed class Gfx : IDisposable
     readonly ID2D1DCRenderTarget _rt;
     readonly ID2D1SolidColorBrush _brush;
     readonly ID2D1StrokeStyle _roundCap;
-    IntPtr _memDc, _dib, _oldBmp;
+    IntPtr _memDc, _dib, _oldBmp, _bits;
     int _dibW, _dibH;
 
     public float Scale { get; private set; } = 1f;
@@ -46,7 +46,7 @@ public sealed class Gfx : IDisposable
         DW = DWrite.DWriteCreateFactory<IDWriteFactory>(DWFactoryType.Shared);
         Wic = new IWICImagingFactory();
         var props = new RenderTargetProperties(RenderTargetType.Software,
-            new PixelFormat(Format.B8G8R8A8_UNorm, AlphaMode.Premultiplied), 96, 96, RenderTargetUsage.None, FeatureLevel.Default);
+            new PixelFormat(Vortice.DXGI.Format.B8G8R8A8_UNorm,AlphaMode.Premultiplied), 96, 96, RenderTargetUsage.None, FeatureLevel.Default);
         _rt = D2.CreateDCRenderTarget(props);
         _rt.TextAntialiasMode = Vortice.Direct2D1.TextAntialiasMode.Grayscale;
         _rt.AntialiasMode = AntialiasMode.PerPrimitive;
@@ -72,7 +72,7 @@ public sealed class Gfx : IDisposable
             biSize = (uint)System.Runtime.InteropServices.Marshal.SizeOf<BITMAPINFOHEADER>(),
             biWidth = w, biHeight = -h, biPlanes = 1, biBitCount = 32
         };
-        _dib = Win32.CreateDIBSection(_memDc, ref bmi, 0, out _, IntPtr.Zero, 0);
+        _dib = Win32.CreateDIBSection(_memDc, ref bmi, 0, out _bits, IntPtr.Zero, 0);
         _oldBmp = Win32.SelectObject(_memDc, _dib);
         _dibW = w; _dibH = h;
     }
@@ -170,6 +170,27 @@ public sealed class Gfx : IDisposable
         _rt.DrawGeometry(geo, B(c), width, _roundCap);
     }
 
+    /// <summary>
+    /// Çentik "kulağı": gövdenin yan kenarıyla ekranın üst kenarını birleştiren içbükey kıvrım.
+    /// corner = gövde kenarının y=0'daki noktası.
+    /// </summary>
+    public void NotchEar(Vector2 corner, float r, bool left, Color4 c)
+    {
+        if (r < 0.5f) return;
+        using var geo = D2.CreatePathGeometry();
+        using (var s = geo.Open())
+        {
+            float dir = left ? -1 : 1;
+            s.BeginFigure(new Vector2(corner.X + dir * r, corner.Y), FigureBegin.Filled);
+            s.AddArc(new ArcSegment(new Vector2(corner.X, corner.Y + r), new Size(r, r), 0,
+                left ? SweepDirection.Clockwise : SweepDirection.CounterClockwise, ArcSize.Small));
+            s.AddLine(corner);
+            s.EndFigure(FigureEnd.Closed);
+            s.Close();
+        }
+        _rt.FillGeometry(geo, B(c));
+    }
+
     /// <summary>Çizgi grafik + altında gradyan dolgu.</summary>
     public void Sparkline(Rect r, ReadOnlySpan<float> values, float max, Color4 c)
     {
@@ -248,13 +269,14 @@ public sealed class Gfx : IDisposable
     /// <summary>Katmanlı yumuşak gölge.</summary>
     public void Shadow(Rect r, float rad, float spread, float strength, float dy = 4)
     {
-        const int N = 10;
+        // Eşit alfalı, dışa doğru seyrekleşen katmanlar → üst üste binince yumuşak (yaklaşık gauss) düşüş, basamak yok
+        const int N = 22;
+        float per = strength / N * 1.15f;
         for (int i = N; i >= 1; i--)
         {
-            float t = i / (float)N;
+            float t = MathF.Pow(i / (float)N, 1.7f);
             var rr = new Rect(r.X - spread * t, r.Y - spread * t + dy * t, r.Width + 2 * spread * t, r.Height + 2 * spread * t);
-            float a = strength * (1 - t) * (1 - t) / N * 3f;
-            FillRound(rr, rad + spread * t, new Color4(0, 0, 0, a));
+            FillRound(rr, rad + spread * t, new Color4(0, 0, 0, per));
         }
     }
 
@@ -376,6 +398,25 @@ public sealed class Gfx : IDisposable
         if (_measure.Count > 512) _measure.Clear();
         _measure[key] = v;
         return v;
+    }
+
+    /// <summary>Son çizilen kareyi PNG olarak kaydeder (--snap test modu).</summary>
+    public unsafe void SavePng(string path, int w, int h)
+    {
+        var rgba = new byte[w * h * 4];
+        byte* src = (byte*)_bits;
+        for (int y = 0; y < h; y++)
+        for (int x = 0; x < w; x++)
+        {
+            byte* p = src + (y * _dibW + x) * 4;
+            int a = p[3], o = (y * w + x) * 4;
+            if (a == 0) continue;
+            rgba[o] = (byte)Math.Min(255, p[2] * 255 / a);
+            rgba[o + 1] = (byte)Math.Min(255, p[1] * 255 / a);
+            rgba[o + 2] = (byte)Math.Min(255, p[0] * 255 / a);
+            rgba[o + 3] = (byte)a;
+        }
+        Png.Write(path, w, h, rgba);
     }
 
     public void Dispose()

@@ -43,7 +43,7 @@ internal partial interface IShellItemImageFactory
     [PreserveSig] int GetImage(NativeSize size, int flags, out IntPtr hbitmap);
 }
 
-internal static class Com
+internal static class ComUtil
 {
     public static readonly StrategyBasedComWrappers Wrappers = new();
 

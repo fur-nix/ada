@@ -25,6 +25,8 @@ public sealed class State
     public List<PinnedApp> Apps { get; set; } = new();
     public string Accent { get; set; } = "8E9BFF";
     public int LastTab { get; set; }
+    /// <summary>true: üst kenara yapışık çentik, false: yüzen ada.</summary>
+    public bool Notch { get; set; }
     public bool FirstRunDone { get; set; }
 }
 
