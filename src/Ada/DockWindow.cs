@@ -67,8 +67,9 @@ public sealed unsafe class DockWindow : ISurface
             Win32.RegisterClassExW(ref wc);
             _registered = true;
         }
-        Hwnd = Win32.CreateWindowExW(Win32.WS_EX_LAYERED | Win32.WS_EX_TOOLWINDOW | Win32.WS_EX_TOPMOST | Win32.WS_EX_NOACTIVATE,
+        Hwnd = Win32.CreateWindowExW(Win32.WS_EX_LAYERED | Win32.WS_EX_TOOLWINDOW | Win32.WS_EX_TOPMOST | Win32.WS_EX_NOACTIVATE | Win32.WS_EX_ACCEPTFILES,
             "AdaDock", "Ada Dock", Win32.WS_POPUP, 0, 0, 10, 10, IntPtr.Zero, IntPtr.Zero, inst, IntPtr.Zero);
+        Win32.DragAcceptFiles(Hwnd, true); // dosyayı Dock'a sürükle-bırak → sabitle
         Refresh();
         if (I.SnapMode) return; // test: ekrana çıkma, görev çubuğuna dokunma
         Frame();
@@ -311,6 +312,18 @@ public sealed unsafe class DockWindow : ISurface
             case WM_SETCURSOR:
                 if (U.WantHand && Win32.LoWord(l) == 1) { Win32.SetCursor(Win32.LoadCursorW(IntPtr.Zero, 32649)); return 1; }
                 break;
+            case Win32.WM_DROPFILES:
+            {
+                char* buf = stackalloc char[1024];
+                uint n = Win32.DragQueryFileW(w, 0xFFFFFFFF, null, 0);
+                for (uint i = 0; i < n; i++)
+                {
+                    uint len = Win32.DragQueryFileW(w, i, buf, 1024);
+                    I.PinToDock(new string(buf, 0, (int)len));
+                }
+                Win32.DragFinish(w);
+                return 0;
+            }
             case WM_APPBAR:
                 if ((int)w == 1) RegisterAppBar(); // ABN_POSCHANGED
                 return 0;
@@ -608,6 +621,7 @@ public sealed unsafe class DockWindow : ISurface
         if (!it.Launcher)
         {
             entries.Add((it.Pinned ? "Dock'tan kaldır" : "Dock'ta tut", it.Pinned ? "" : "", () => TogglePin(it), false));
+            entries.Add(("Daireye ekle", "", () => I.AddToRadial(it.Path, name: it.Name), false));
             entries.Add(("Yeni pencere", "", () =>
             {
                 it.BounceStart = U.Time; Animating = true;
@@ -646,6 +660,14 @@ public sealed unsafe class DockWindow : ISurface
             if (hit) U.WantHand = true;
             if (U.Click(id + 1, r)) { _menuItem = null; Dispatcher.Post(run); }
         }
+    }
+
+    /// <summary>Yeni sabitlenen öğe zıplayarak gelsin.</summary>
+    public void Pinned(string path)
+    {
+        Refresh();
+        var it = _items.FirstOrDefault(i => i.Path.Equals(path, StringComparison.OrdinalIgnoreCase));
+        if (it != null) { it.BounceStart = U.Time; Animating = true; }
     }
 
     void TogglePin(Item it)

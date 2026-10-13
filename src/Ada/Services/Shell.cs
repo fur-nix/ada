@@ -45,6 +45,31 @@ public static class Shell
         ((IPersistFile)(object)link).Save(lnk, 1);
     }
 
+    /// <summary>
+    /// Gezgin sağ tık menüsüne "Ada Dock'a sabitle" (tüm dosyalar + klasörler). Yalnızca kullanıcı kaydı (HKCU);
+    /// kapatılınca silinir. Windows 11'de "Diğer seçenekleri göster" altında görünür.
+    /// </summary>
+    public static void EnsureShellMenu(bool enable)
+    {
+        var exe = Environment.ProcessPath;
+        if (exe == null || exe.Contains(@"\bin\", StringComparison.OrdinalIgnoreCase)) return; // geliştirme derlemesi
+        foreach (var cls in new[] { "*", "Directory" })
+        foreach (var (verb, text, arg) in new[] { ("AdaDockPin", "Ada Dock'a sabitle", "--pin"), ("AdaRadialAdd", "Ada dairesine ekle", "--radial") })
+        {
+            var root = $@"Software\Classes\{cls}\shell\{verb}";
+            try
+            {
+                if (!enable) { Microsoft.Win32.Registry.CurrentUser.DeleteSubKeyTree(root, false); continue; }
+                using var k = Microsoft.Win32.Registry.CurrentUser.CreateSubKey(root);
+                k.SetValue("MUIVerb", text);
+                k.SetValue("Icon", $"\"{exe}\",0");
+                using var cmd = k.CreateSubKey("command");
+                cmd.SetValue("", $"\"{exe}\" {arg} \"%1\"");
+            }
+            catch (Exception e) { Log.Error("ShellMenu", e); }
+        }
+    }
+
     /// <summary>Uygulama ikonunu çizer (koyu yuvarlak kare + parlayan ada).</summary>
     public static void MakeIcon(string path)
     {

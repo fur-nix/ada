@@ -86,7 +86,7 @@ public sealed unsafe class Island
     bool _startupDone;
 
     const int T_TICK = 1, T_COLLAPSE = 2, T_EQ = 3, T_BLINK = 4, T_LIVE = 5, T_HOVER = 6, T_PROX = 8;
-    const int HOTKEY_ID = 7, SEARCH_HOTKEY_ID = 9;
+    const int HOTKEY_ID = 7, SEARCH_HOTKEY_ID = 9, RADIAL_HOTKEY_ID = 10;
     const uint WM_QUIT = 0x12, WM_SETCURSOR = 0x20;
     /// <summary>Başka bir Ada süreci (Başlat menüsü → "Ada Ayarları") bu mesajla ayarları açtırır.</summary>
     public const uint WM_OPEN_SETTINGS = Win32.WM_APP + 2;
@@ -94,14 +94,16 @@ public sealed unsafe class Island
     public SettingsWindow? Settings;
     public SpotlightWindow? Spotlight;
     public DockWindow? Dock;
+    public RadialWindow? Radial;
 
-    bool SurfacesAnimating() => Settings?.Animating == true || Spotlight?.Animating == true || Dock?.Animating == true;
-    void FrameSurfaces() { Settings?.FrameIfNeeded(); Spotlight?.FrameIfNeeded(); Dock?.FrameIfNeeded(); }
-    void InvalidateSurfaces() { Settings?.Invalidate(); Spotlight?.Invalidate(); Dock?.Invalidate(); }
+    bool SurfacesAnimating() => Settings?.Animating == true || Spotlight?.Animating == true || Dock?.Animating == true || Radial?.Animating == true;
+    void FrameSurfaces() { Settings?.FrameIfNeeded(); Spotlight?.FrameIfNeeded(); Dock?.FrameIfNeeded(); Radial?.FrameIfNeeded(); }
+    void InvalidateSurfaces() { Settings?.Invalidate(); Spotlight?.Invalidate(); Dock?.Invalidate(); Radial?.Invalidate(); }
     ISurface? SurfaceFor(IntPtr h) =>
         Settings != null && h == Settings.Hwnd ? Settings :
         Spotlight != null && h == Spotlight.Hwnd ? Spotlight :
-        Dock != null && h == Dock.Hwnd ? Dock : null;
+        Dock != null && h == Dock.Hwnd ? Dock :
+        Radial != null && h == Radial.Hwnd ? Radial : null;
     public IntPtr AppIconLarge, AppIconSmall;
 
     public Island()
@@ -164,6 +166,7 @@ public sealed unsafe class Island
         Win32.ShowWindow(Hwnd, Win32.SW_SHOWNOACTIVATE);
         _shown = true;
         Shell.EnsureStartMenu();
+        Shell.EnsureShellMenu(Store.Current.ShellPinMenu);
     }
 
     // ================= ayarlar =================
@@ -176,6 +179,7 @@ public sealed unsafe class Island
     public static readonly uint[] AccentPalette = { 0x8E9BFF, 0x7DB4FF, 0x5EEAD4, 0x4ADE80, 0xFBBF5B, 0xFF8A65, 0xF59AC9, 0xF5F5F7 };
     public bool HotkeyOk { get; private set; } = true;
     public bool SearchHotkeyOk { get; private set; } = true;
+    public bool RadialHotkeyOk { get; private set; } = true;
 
     /// <summary>Ayarlar değişince çağrılır: tema, kısayol, yeniden çizim, kayıt.</summary>
     public void ApplySettings(bool save = false)
@@ -194,7 +198,7 @@ public sealed unsafe class Island
         if (!SnapMode)
         {
             if (s.Visibility == 0) Reveal();
-            if (s.Visibility == 0 && !s.DockAutoHide) Win32.KillTimer(Hwnd, T_PROX);
+            if (s.Visibility == 0 && !s.DockAutoHide && s.AppOverlapMode == 0) Win32.KillTimer(Hwnd, T_PROX);
             else Win32.SetTimer(Hwnd, T_PROX, 100, IntPtr.Zero);
 
             // Spotlight kısayolu
@@ -202,6 +206,13 @@ public sealed unsafe class Island
             SearchHotkeyOk = true;
             if (s.SearchHotkey < 2)
                 SearchHotkeyOk = Win32.RegisterHotKey(Hwnd, SEARCH_HOTKEY_ID, (s.SearchHotkey == 0 ? Win32.MOD_CONTROL : Win32.MOD_ALT) | Win32.MOD_NOREPEAT, 0x20);
+
+            // Dairesel menü kısayolu (Alt+Q / Ctrl+Alt+Q)
+            Win32.UnregisterHotKey(Hwnd, RADIAL_HOTKEY_ID);
+            RadialHotkeyOk = true;
+            if (s.RadialHotkey < 2)
+                RadialHotkeyOk = Win32.RegisterHotKey(Hwnd, RADIAL_HOTKEY_ID, (s.RadialHotkey == 0 ? Win32.MOD_ALT : Win32.MOD_ALT | Win32.MOD_CONTROL) | Win32.MOD_NOREPEAT, 0x51);
+            Shell.EnsureShellMenu(s.ShellPinMenu);
 
             // Dock
             if (s.DockEnabled) { Dock ??= new DockWindow(this); Dock.ApplyLayoutSettings(); }
@@ -227,6 +238,46 @@ public sealed unsafe class Island
     }
 
     public bool FullscreenHidden => _hidden;
+
+    /// <summary>Dairesel menüye ekle (Gezgin sağ tık, sürükle-bırak, Dock menüsü, ayarlar).</summary>
+    public void AddToRadial(string path, bool toast = true, string? name = null)
+    {
+        path = path.Trim().Trim('"');
+        if (path.Length == 0 || !(File.Exists(path) || Directory.Exists(path) || path.StartsWith("ms-", StringComparison.OrdinalIgnoreCase))) return;
+        var list = Store.Current.RadialApps;
+        if (list.Any(a => a.Path.Equals(path, StringComparison.OrdinalIgnoreCase))) return;
+        if (list.Count >= 12) { if (toast) Toast("Daire dolu", "En fazla 12 öğe", Glyph.Apps, Theme.Orange, 0, 2f); return; }
+        var app = path.StartsWith("ms-", StringComparison.OrdinalIgnoreCase) ? new PinnedApp { Name = name ?? "Ayarlar", Path = path } : AppsService.FromPath(path);
+        if (name != null) app.Name = name;
+        list.Add(app);
+        Store.Save();
+        Settings?.Invalidate();
+        if (toast) Toast("Daireye eklendi", app.Name, Glyph.Add, Theme.Accent, 0, 2.2f);
+    }
+
+    /// <summary>Dock'a kalıcı sabitle (sürükle-bırak, Gezgin sağ tık menüsü, --pin).</summary>
+    public void PinToDock(string path)
+    {
+        path = path.Trim().Trim('"');
+        if (path.Length == 0 || !(File.Exists(path) || Directory.Exists(path))) return;
+        var apps = Store.Current.Apps;
+        if (!apps.Any(a => a.Path.Equals(path, StringComparison.OrdinalIgnoreCase)))
+        {
+            apps.Add(AppsService.FromPath(path));
+            Store.Save();
+        }
+        if (!Store.Current.DockEnabled) { Store.Current.DockEnabled = true; ApplySettings(save: true); }
+        Dock?.Pinned(path);
+        Toast("Dock'a sabitlendi", Path.GetFileNameWithoutExtension(path), Glyph.Add, Theme.Accent, 4, 2.2f);
+    }
+
+    public void ToggleRadial()
+    {
+        if (SnapMode) return;
+        Collapse();
+        Radial ??= new RadialWindow(this);
+        Radial.Toggle();
+    }
 
     public void ToggleSpotlight()
     {
@@ -433,6 +484,7 @@ public sealed unsafe class Island
                 return 0;
             case Win32.WM_HOTKEY:
                 if ((int)w == SEARCH_HOTKEY_ID) { ToggleSpotlight(); return 0; }
+                if ((int)w == RADIAL_HOTKEY_ID) { ToggleRadial(); return 0; }
                 if (Mode == Mode.Expanded) Collapse();
                 else { Expand(Tab); BeginKeyboard(); }
                 return 0;
@@ -463,6 +515,17 @@ public sealed unsafe class Island
                 _dirty = true;
                 InvalidateSurfaces();
                 return 0;
+            case 0x4A: // WM_COPYDATA: başka Ada süreci "--pin <yol>" gönderdi
+            {
+                var cds = (COPYDATASTRUCT*)l;
+                if (cds->dwData is 1 or 2 && cds->cbData > 0)
+                {
+                    var path = new string((char*)cds->lpData, 0, cds->cbData / 2).TrimEnd('\0');
+                    if (cds->dwData == 1) Dispatcher.Post(() => PinToDock(path));
+                    else Dispatcher.Post(() => AddToRadial(path));
+                }
+                return 1;
+            }
             case WM_OPEN_SETTINGS:
                 OpenSettings();
                 return 0;
@@ -520,7 +583,38 @@ public sealed unsafe class Island
         return new Rect(Margin, TopGap, _w.Value, _h.Value);
     }
 
-    bool OverIsland() => U.Inside && IslandRect().Contains(U.Mouse);
+    bool OverIsland()
+    {
+        if (!U.Inside) return false;
+        var r = IslandRect();
+        // ince çizgi halindeyken yakalaması kolay olsun: dikeyde birkaç piksel pay
+        if (r.Height < 10) r = new Rect(r.X - 10, 0, r.Width + 20, r.Bottom + 6);
+        return r.Contains(U.Mouse);
+    }
+
+    /// <summary>Ön plandaki uygulama ekranın üstünü (adanın olduğu yeri) kaplıyor mu?</summary>
+    bool _appCovering;
+
+    /// <summary>Görünürlük: ayar + "uygulama üstteyken fare gelince" kuralı.</summary>
+    int EffectiveVisibility => _appCovering && Store.Current.AppOverlapMode == 2 && Store.Current.Visibility == 0 ? 1 : Store.Current.Visibility;
+
+    void CheckCovering()
+    {
+        bool cov = false;
+        var fg = Win32.GetForegroundWindow();
+        if (fg != IntPtr.Zero && fg != Hwnd && SurfaceFor(fg) == null && fg != Win32.GetShellWindow() && Win32.GetWindowRect(fg, out var r))
+        {
+            var cls = Win32.ClassName(fg);
+            int cx = (_mon.Left + _mon.Right) / 2;
+            cov = cls is not ("WorkerW" or "Progman" or "Shell_TrayWnd")
+                  && (Win32.IsZoomed(fg) || r.Top <= _mon.Top + 4)
+                  && r.Left < cx && r.Right > cx && r.Bottom > _mon.Top + 40;
+        }
+        if (cov == _appCovering) return;
+        _appCovering = cov;
+        _awayTicks = 0;
+        _dirty = true; _animating = true;
+    }
 
     void Frame()
     {
@@ -596,6 +690,9 @@ public sealed unsafe class Island
     {
         float k = SizeK, rnd = Store.Current.Roundness;
         float cw = IdleWidth(k), ch = CH * k;
+        // tarayıcı vb. ekranın üstünü kaplarken: sekmelerin önüne geçmeyen ince çizgi
+        bool mini = _appCovering && Store.Current.AppOverlapMode == 1 && Mode == Mode.Collapsed;
+        if (mini) { cw = 72; ch = 5; }
         (float w, float h, float r) target = Mode switch
         {
             Mode.Hover => (cw + 16 * k, ch + 4 * k, (ch + 4 * k) / 2 * rnd),
@@ -614,7 +711,7 @@ public sealed unsafe class Island
         _hideY.Step(dt);
 
         _notch.Target = Store.Current.Notch ? 1 : 0; _notch.Step(dt);
-        _collA.Target = Mode is Mode.Collapsed or Mode.Hover ? 1 : 0; _collA.Step(dt);
+        _collA.Target = (Mode is Mode.Collapsed or Mode.Hover) && !mini ? 1 : 0; _collA.Step(dt);
         _liveA.Target = Mode == Mode.Live ? 1 : 0; _liveA.Step(dt);
 
         if (_tabT < 1) _tabT = MathF.Min(1, _tabT + dt / 0.34f);
@@ -640,7 +737,7 @@ public sealed unsafe class Island
         G.FillRound(body, R, Theme.Island);
         if (n > 0.01f)
         {
-            float ear = (9 + 7 * e) * n;
+            float ear = MathF.Min(9 + 7 * e, H * 1.4f) * n; // ince çizgide kulaklar da küçülür
             G.NotchEar(new Vector2(isl.X + 0.5f, 0), ear, true, Theme.Island);
             G.NotchEar(new Vector2(isl.Right - 0.5f, 0), ear, false, Theme.Island);
         }
@@ -911,14 +1008,16 @@ public sealed unsafe class Island
     void ProximityTick()
     {
         Dock?.Proximity();
+        if (Store.Current.AppOverlapMode != 0) CheckCovering();
         var s = Store.Current;
-        if (s.Visibility == 0 || _hidden || SnapMode) return;
+        int vis = EffectiveVisibility;
+        if (vis == 0 || _hidden || SnapMode) { if (_autoHidden && vis == 0) Reveal(); return; }
         if (!Win32.GetCursorPos(out var p)) return;
         int cx = (_mon.Left + _mon.Right) / 2;
         bool nearTop = p.Y <= _mon.Top + 2 && Math.Abs(p.X - cx) < 280 * _scale && p.X >= _mon.Left && p.X < _mon.Right;
         if (_autoHidden)
         {
-            if (s.Visibility == 1 && nearTop) Reveal();
+            if (vis == 1 && nearTop) Reveal();
             return;
         }
         bool overWin = p.X >= _winX && p.X <= _winX + _winW && p.Y >= _mon.Top && p.Y <= _winY + _winH + 8;
@@ -1080,6 +1179,7 @@ public sealed unsafe class Island
         if (now.Minute != _minute) { _minute = now.Minute; _dirty = true; }
         if (Mode == Mode.Expanded) Panels[Tab].Tick();
         ((TodayPanel)Panels[1]).BackgroundTick();
+        CheckCovering();
         Settings?.Invalidate();
         Spotlight?.Tick(); Dock?.Tick();
         // boştaki yuvalar: saniyeli saat her saniye, CPU·RAM iki saniyede bir

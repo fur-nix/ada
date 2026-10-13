@@ -55,6 +55,8 @@ public sealed class State
     /// <summary>0 yumuşak, 1 normal, 2 hızlı.</summary>
     public int AnimSpeed { get; set; } = 1;
     public bool Shadow { get; set; } = true;
+    /// <summary>Ön plandaki pencere ekranın üstünü kaplarken (tarayıcı sekmeleri vb.): 0 normal, 1 çok küçük çizgi, 2 gizle (fare gelince).</summary>
+    public int AppOverlapMode { get; set; } = 1;
     public bool OpenOnHover { get; set; }
     public int CollapseDelayMs { get; set; } = 380;
     public bool HideOnFullscreen { get; set; } = true;
@@ -87,6 +89,20 @@ public sealed class State
     public bool DockBounce { get; set; } = true;
     public bool DockPreviews { get; set; } = true;
     public bool DockIndicators { get; set; } = true;
+
+    // ---- Güç (ASUS) ----
+    /// <summary>Son seçilen ASUS fan/performans profili: 0 dengeli, 1 turbo, 2 sessiz, -1 dokunulmadı.</summary>
+    public int AsusFanMode { get; set; } = -1;
+    /// <summary>Pil şarj sınırı (60/80/100); 0 = Ada yönetmesin. ASUS bunu yeniden başlatınca unutur → açılışta uygulanır.</summary>
+    public int ChargeLimit { get; set; }
+
+    // ---- Dairesel menü ve sabitleme ----
+    /// <summary>Dairesel menünün kendi listesi (Dock'tan bağımsız; kullanıcı ekler).</summary>
+    public List<PinnedApp> RadialApps { get; set; } = new();
+    /// <summary>Dairesel menü kısayolu: 0 Alt+Q, 1 Ctrl+Alt+Q, 2 kapalı.</summary>
+    public int RadialHotkey { get; set; }
+    /// <summary>Gezgin sağ tık menüsüne "Ada Dock'a sabitle" eklensin.</summary>
+    public bool ShellPinMenu { get; set; } = true;
 
     /// <summary>Spotlight: neyi kaç kez açtın (Launchy gibi sık kullanılanı öne alır).</summary>
     public Dictionary<string, int> LaunchCounts { get; set; } = new();
@@ -128,9 +144,14 @@ public sealed class State
         DockOpacity = Math.Clamp(DockOpacity, 0.2f, 1f);
         DockStyle = Math.Clamp(DockStyle, 0, 2);
         LaunchCounts ??= new();
+        RadialApps ??= new();
+        if (RadialApps.Count > 12) RadialApps = RadialApps.Take(12).ToList();
         if (LaunchCounts.Count > 400) // en az kullanılanları at
             LaunchCounts = LaunchCounts.OrderByDescending(kv => kv.Value).Take(300).ToDictionary(kv => kv.Key, kv => kv.Value);
         SearchHotkey = Math.Clamp(SearchHotkey, 0, 2);
+        RadialHotkey = Math.Clamp(RadialHotkey, 0, 2);
+        AppOverlapMode = Math.Clamp(AppOverlapMode, 0, 2);
+        if (ChargeLimit is not (0 or 60 or 80 or 100)) ChargeLimit = 0;
         var order = TabOrder.Where(t => t is >= 0 and < TabCount).Distinct().ToList();
         for (int i = 0; i < TabCount; i++) if (!order.Contains(i)) order.Add(i);
         TabOrder = order;
@@ -147,7 +168,7 @@ public sealed class State
         var d = new State();
         Notch = d.Notch; Size = d.Size; Roundness = d.Roundness; Accent = d.Accent;
         IdleLeft = d.IdleLeft; IdleCenter = d.IdleCenter; IdleRight = d.IdleRight; MediaInIdle = d.MediaInIdle;
-        Visibility = d.Visibility; AnimSpeed = d.AnimSpeed; Shadow = d.Shadow;
+        Visibility = d.Visibility; AnimSpeed = d.AnimSpeed; Shadow = d.Shadow; AppOverlapMode = d.AppOverlapMode;
         DockEnabled = d.DockEnabled; DockSize = d.DockSize; DockMagnify = d.DockMagnify; DockAutoHide = d.DockAutoHide;
         DockReserve = d.DockReserve; HideTaskbar = d.HideTaskbar; DockShowRunning = d.DockShowRunning;
         DockIconSize = 50; DockMagnification = d.DockMagnification; DockSpacing = d.DockSpacing; DockRadius = d.DockRadius;

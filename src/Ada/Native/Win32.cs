@@ -62,6 +62,9 @@ public struct OPENFILENAME
 }
 
 [StructLayout(LayoutKind.Sequential)]
+public struct COPYDATASTRUCT { public IntPtr dwData; public int cbData; public IntPtr lpData; }
+
+[StructLayout(LayoutKind.Sequential)]
 public struct BITMAP { public int bmType, bmWidth, bmHeight, bmWidthBytes; public ushort bmPlanes, bmBitsPixel; public IntPtr bmBits; }
 
 [StructLayout(LayoutKind.Sequential)]

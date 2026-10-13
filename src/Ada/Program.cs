@@ -39,11 +39,30 @@ public static class Program
         }
 
         bool openSettings = args.Contains("--settings");
+        int pinIdx = Array.IndexOf(args, "--pin");
+        string? pinPath = pinIdx >= 0 && pinIdx + 1 < args.Length ? args[pinIdx + 1] : null;
+        int radIdx = Array.IndexOf(args, "--radial");
+        string? radialPath = radIdx >= 0 && radIdx + 1 < args.Length ? args[radIdx + 1] : null;
+        if (radialPath != null) pinPath = null;
         using var mutex = new Mutex(true, @"Local\Ada.Island.SingleInstance", out bool first);
         if (!first)
         {
             // Ada zaten çalışıyor: Başlat menüsündeki "Ada Ayarları" → çalışan kopyaya ayarları açtır
             var h = Win32.FindWindowW("AdaIsland", null);
+            string? sendPath = pinPath ?? radialPath;
+            if (h != IntPtr.Zero && sendPath != null)
+            {
+                // Gezgin sağ tık → "Ada Dock'a sabitle": yolu çalışan kopyaya gönder
+                unsafe
+                {
+                    fixed (char* s = sendPath)
+                    {
+                        var cds = new COPYDATASTRUCT { dwData = radialPath != null ? 2 : 1, cbData = (sendPath.Length + 1) * 2, lpData = (IntPtr)s };
+                        Win32.SendMessageW(h, 0x4A, IntPtr.Zero, (IntPtr)(&cds));
+                    }
+                }
+                return 0;
+            }
             if (h != IntPtr.Zero)
             {
                 Win32.AllowSetForegroundWindow(-1);
@@ -56,6 +75,8 @@ public static class Program
         var island = new Island();
         island.Create();
         if (openSettings) island.OpenSettings();
+        if (pinPath != null) island.PinToDock(pinPath);
+        if (radialPath != null) island.AddToRadial(radialPath);
         try { island.Run(); }
         finally { island.Shutdown(); Store.Save(); }
         return 0;
