@@ -1,4 +1,3 @@
-using System.Diagnostics;
 using System.Numerics;
 using System.Runtime.InteropServices;
 using Ada.Core;
@@ -13,12 +12,13 @@ using Rect = Vortice.Mathematics.Rect;
 namespace Ada;
 
 /// <summary>
-/// Tam ekran uygulama başlatıcı (Windows Başlat menüsü işlevinde, ama minimal ve özgün):
-/// buzlu cam arka plan, üstte tek büyük arama, altında büyük ikonlu akıcı ızgara.
-/// Yaz → süzülür, ok tuşları + Enter, Esc / boşluğa tık / odak kaybı → kapanır.
+/// Başlat menüsü tarzı panel (Windows tuşuyla açılan menü gibi — tam ekran değil):
+/// Dock'un üstünde ortada, buzlu cam, üstte arama, altında uygulama ızgarası.
+/// Yaz → süzülür, ok tuşları + Enter, Esc / dışına tık / odak kaybı → kapanır.
 /// </summary>
 public sealed unsafe class LauncherWindow : ISurface
 {
+    const float PanelW = 680, PanelH = 700, M = 26, R = 20;
     static bool _registered;
     readonly Island I;
     Gfx G => I.G;
@@ -26,12 +26,12 @@ public sealed unsafe class LauncherWindow : ISurface
     public IntPtr Hwnd { get; private set; }
     public bool Animating { get; private set; }
     bool _dirty = true, _open, _shown;
-    readonly Stopwatch _sw = Stopwatch.StartNew();
+    readonly System.Diagnostics.Stopwatch _sw = System.Diagnostics.Stopwatch.StartNew();
     double _last;
-    Smooth _vis = new(0, 15);
-    Spring _scroll = new(0, 240, 30);
-    readonly TextBox _box = new() { Placeholder = "Ara" };
-    int _pw, _ph, _sel;
+    Smooth _vis = new(0, 16);
+    Spring _scroll = new(0, 260, 32);
+    readonly TextBox _box = new() { Placeholder = "Uygulama ara" };
+    int _pw, _ph, _sel, _winX, _winY;
     RECT _mon;
     float _scale = 1;
     ID2D1Bitmap? _backdrop;
@@ -58,10 +58,11 @@ public sealed unsafe class LauncherWindow : ISurface
 
     public bool IsOpen => _open;
 
-    /// <summary>--snap: başlatıcıyı (isteğe bağlı aramayla) PNG'ye çizer.</summary>
+    /// <summary>--snap: paneli (isteğe bağlı aramayla) PNG'ye çizer.</summary>
     public void SnapRender(string path, string query)
     {
-        _mon = I.MonitorRect; _scale = I.Scale; _pw = _mon.Width; _ph = _mon.Height;
+        _mon = I.MonitorRect; _scale = I.Scale;
+        Place();
         I.AppIndex.EnsureLoaded();
         _box.Text = query; _box.Caret = query.Length;
         Rebuild();
@@ -75,6 +76,17 @@ public sealed unsafe class LauncherWindow : ISurface
     public void FrameIfNeeded() { if (_shown && (_dirty || Animating)) Frame(); }
     public void Toggle() { if (_open) Hide(); else Show(); }
 
+    void Place()
+    {
+        _pw = (int)MathF.Ceiling((PanelW + M * 2) * _scale);
+        _ph = (int)MathF.Ceiling((PanelH + M * 2) * _scale);
+        int cx = (_mon.Left + _mon.Right) / 2;
+        _winX = cx - _pw / 2;
+        // Dock'un üstünde: ekranın altından ~96px pay bırak
+        _winY = _mon.Bottom - _ph - (int)(70 * _scale);
+        if (_winY < _mon.Top + 8) _winY = _mon.Top + 8;
+    }
+
     public void Show()
     {
         var mon = Win32.MonitorFromWindow(I.Hwnd, 2);
@@ -84,8 +96,8 @@ public sealed unsafe class LauncherWindow : ISurface
         Win32.GetDpiForMonitor(mon, 0, out var dpi, out _);
         _scale = dpi == 0 ? 1 : dpi / 96f;
         G.SetScale(_scale);
-        _pw = _mon.Width; _ph = _mon.Height;
-        Win32.SetWindowPos(Hwnd, Win32.HWND_TOPMOST, _mon.Left, _mon.Top, _pw, _ph, Win32.SWP_NOACTIVATE);
+        Place();
+        Win32.SetWindowPos(Hwnd, Win32.HWND_TOPMOST, _winX, _winY, _pw, _ph, Win32.SWP_NOACTIVATE);
 
         I.AppIndex.EnsureLoaded();
         _box.Clear(); _sel = 0; _scroll.Snap(0);
@@ -104,20 +116,16 @@ public sealed unsafe class LauncherWindow : ISurface
     {
         _backdrop?.Dispose(); _backdrop = null;
         var file = WallpaperService.Current();
-        if (File.Exists(file)) _backdrop = G.BlurredWallpaper(file, _mon.Width, _mon.Height, 12);
+        if (File.Exists(file)) _backdrop = G.BlurredWallpaper(file, _mon.Width, _mon.Height, 10);
     }
 
     void Rebuild()
     {
         var q = _box.Text.Trim();
-        var tr = System.Globalization.CultureInfo.GetCultureInfo("tr-TR");
         if (q.Length == 0)
         {
-            // sık kullanılanlar önce, sonra alfabetik tümü
             var counts = Store.Current.LaunchCounts;
-            var freq = I.AppIndex.All
-                .Where(e => counts.ContainsKey(e.Path))
-                .OrderByDescending(e => counts[e.Path]).Take(12).ToList();
+            var freq = I.AppIndex.All.Where(e => counts.ContainsKey(e.Path)).OrderByDescending(e => counts[e.Path]).Take(10).ToList();
             var rest = I.AppIndex.All.Where(e => !freq.Contains(e)).ToList();
             _items = freq.Concat(rest).ToList();
         }
@@ -125,11 +133,13 @@ public sealed unsafe class LauncherWindow : ISurface
         _sel = Math.Clamp(_sel, 0, Math.Max(0, _items.Count - 1));
     }
 
-    // ---------------- yerleşim ----------------
-    float ContentW => MathF.Min(_mon.Width / _scale - 160, 1200);
-    int Cols => Math.Max(4, (int)(ContentW / 150));
-    float CellW => ContentW / Cols;
-    const float CellH = 128, IconSize = 64, TopPad = 150;
+    // ---------------- yerleşim (panel içi, DIP) ----------------
+    const float Pad = 22, SearchH = 46, GridTop = 84;
+    const int Cols = 5;
+    float GridW => PanelW - Pad * 2;
+    float CellW => GridW / Cols;
+    const float CellH = 96, IconSize = 44;
+    float ViewH => PanelH - GridTop - Pad;
 
     // ---------------- mesajlar ----------------
     public IntPtr WndProc(IntPtr h, uint m, IntPtr w, IntPtr l)
@@ -137,10 +147,10 @@ public sealed unsafe class LauncherWindow : ISurface
         const uint WM_SETCURSOR = 0x20;
         switch (m)
         {
-            case Win32.WM_MOUSEMOVE: U.Mouse = new Vector2(Win32.LoWord(l) / _scale, Win32.HiWord(l) / _scale); U.Inside = true; _dirty = true; return 0;
+            case Win32.WM_MOUSEMOVE: U.Mouse = new Vector2(Win32.LoWord(l) / _scale - M, Win32.HiWord(l) / _scale - M); U.Inside = true; _dirty = true; return 0;
             case Win32.WM_LBUTTONDOWN: U.Down = true; U.Pressed = true; _dirty = true; return 0;
             case Win32.WM_LBUTTONUP: U.Down = false; U.Released = true; _dirty = true; return 0;
-            case Win32.WM_MOUSEWHEEL: _scroll.Target -= Win32.HiWord(w) / 120f * CellH * 0.9f; _dirty = true; return 0;
+            case Win32.WM_MOUSEWHEEL: _scroll.Target -= Win32.HiWord(w) / 120f * CellH; _dirty = true; return 0;
             case WM_SETCURSOR: if (U.WantHand && Win32.LoWord(l) == 1) { Win32.SetCursor(Win32.LoadCursorW(IntPtr.Zero, 32649)); return 1; } break;
             case Win32.WM_ACTIVATE: if (Win32.LoWord(w) == 0) Hide(); return 0;
             case Win32.WM_CHAR:
@@ -167,11 +177,9 @@ public sealed unsafe class LauncherWindow : ISurface
     void EnsureVisible()
     {
         if (_items.Count == 0) return;
-        int row = _sel / Cols;
-        float y = row * CellH;
-        float viewH = _mon.Height / _scale - TopPad - 40;
+        float y = _sel / Cols * CellH;
         if (y < _scroll.Target) _scroll.Target = y;
-        else if (y + CellH > _scroll.Target + viewH) _scroll.Target = y + CellH - viewH;
+        else if (y + CellH > _scroll.Target + ViewH) _scroll.Target = y + CellH - ViewH;
     }
 
     void Launch()
@@ -193,12 +201,20 @@ public sealed unsafe class LauncherWindow : ISurface
         if (!Animating) dt = 1 / 60f;
         _last = now;
         U.Dt = dt; U.Time += dt; U.NeedsFrame = false; U.WantHand = false;
-        _vis.Target = _open ? 1 : 0; _vis.Speed = _open ? 15 : 22; _vis.Step(dt);
+        _vis.Target = _open ? 1 : 0; _vis.Speed = _open ? 16 : 22; _vis.Step(dt);
         _scroll.Step(dt);
 
         G.Begin(_pw, _ph);
-        try { Draw(); } finally { G.End(); }
-        G.Present(Hwnd, _mon.Left, _mon.Top, _pw, _ph);
+        try
+        {
+            float a = Ease.OutCubic(_vis.Value);
+            G.Alpha = a;
+            G.PushTranslate(M, M + 14 * (1 - a), 0.98f + 0.02f * a, new Vector2(PanelW / 2, PanelH)); // alttan yukarı kayarak gelir
+            Draw();
+            G.PopTransform();
+        }
+        finally { G.End(); }
+        G.PresentInPlace(Hwnd, _pw, _ph);
 
         Animating = U.NeedsFrame || !_vis.Settled || !_scroll.Settled;
         _dirty = false;
@@ -213,46 +229,47 @@ public sealed unsafe class LauncherWindow : ISurface
 
     void Draw()
     {
-        float a = Ease.OutCubic(_vis.Value);
-        float W = _mon.Width / _scale, H = _mon.Height / _scale;
-        var full = new Rect(0, 0, W, H);
-        G.Alpha = a;
-
-        // buzlu cam arka plan: bulanık duvar kağıdı + koyu cam
+        var panel = new Rect(0, 0, PanelW, PanelH);
+        G.Shadow(panel, R, 22, 0.55f, 10);
+        // buzlu cam: duvar kağıdının bulanık bölgesi (ekrana hizalı) + koyu cam
         if (_backdrop != null)
         {
             var bs = _backdrop.Size;
-            G.BitmapCover(_backdrop, full, 0, 1);
+            var mx = Matrix3x2.CreateScale(_mon.Width / _scale / bs.Width, _mon.Height / _scale / bs.Height)
+                     * Matrix3x2.CreateTranslation((_mon.Left - _winX) / _scale - M, (_mon.Top - _winY) / _scale - M);
+            G.FillRoundBitmap(panel, R, _backdrop, mx);
+            G.FillRound(panel, R, Theme.Rgb(0x0E1118, 0.72f));
         }
-        G.FillRect(full, Theme.Rgb(0x0A0C12, 0.62f));
-        // açılış zoom hissi: içerik hafif büyüyerek gelir
-        G.PushTranslate(0, 0, 0.97f + 0.03f * a, new Vector2(W / 2, H / 2));
+        else G.FillRound(panel, R, Theme.Rgb(0x121620, 0.96f));
+        G.VGradientRound(new Rect(0, 0, PanelW, 90), R, Theme.Rgb(0xFFFFFF, 0.06f), Theme.Rgb(0xFFFFFF, 0));
+        G.StrokeRound(new Rect(0.5f, 0.5f, PanelW - 1, PanelH - 1), R, Theme.Rgb(0xFFFFFF, 0.12f), 1);
 
         // arama
-        float sw = MathF.Min(560, ContentW);
-        var sb = new Rect(W / 2 - sw / 2, 64, sw, 48);
-        G.FillRound(sb, 24, Theme.Rgb(0xFFFFFF, 0.1f));
-        G.StrokeRound(sb, 24, Theme.Rgb(0xFFFFFF, 0.14f), 1);
-        G.Icon("", new Vector2(sb.X + 26, sb.CenterY), 16, Theme.Text2);
-        var tr = new Rect(sb.X + 48, sb.Y, sb.Width - 64, sb.Height);
-        if (_box.Text.Length == 0) G.Text(_box.Placeholder, tr, 18, Theme.Text3, FontWeight.Normal, font: Theme.TextFont);
-        float caretX = G.Measure(_box.Text, 18, FontWeight.Normal, Theme.TextFont);
-        G.Text(_box.Text, tr, 18, Theme.Text, FontWeight.Normal, font: Theme.TextFont);
+        var sb = new Rect(Pad, 20, PanelW - Pad * 2, SearchH);
+        G.FillRound(sb, SearchH / 2, Theme.Rgb(0xFFFFFF, 0.1f));
+        G.StrokeRound(sb, SearchH / 2, Theme.Rgb(0xFFFFFF, 0.12f), 1);
+        G.Icon("", new Vector2(sb.X + 24, sb.CenterY), 15, Theme.Text2);
+        var tr = new Rect(sb.X + 46, sb.Y, sb.Width - 60, sb.Height);
+        if (_box.Text.Length == 0) G.Text(_box.Placeholder, tr, 15, Theme.Text3, FontWeight.Normal, font: Theme.TextFont);
+        float caretX = G.Measure(_box.Text, 15, FontWeight.Normal, Theme.TextFont);
+        G.Text(_box.Text, tr, 15, Theme.Text, FontWeight.Normal, font: Theme.TextFont);
         float blink = ((int)(U.Time / 0.53f)) % 2 == 0 ? 1 : 0.15f;
-        G.Line(new Vector2(tr.X + caretX + 2, sb.CenterY - 12), new Vector2(tr.X + caretX + 2, sb.CenterY + 12), Theme.Accent.WithA(blink), 2);
+        G.Line(new Vector2(tr.X + caretX + 2, sb.CenterY - 11), new Vector2(tr.X + caretX + 2, sb.CenterY + 11), Theme.Accent.WithA(blink), 2);
         if (_open) U.NeedsFrame = true;
 
+        // başlık
+        G.Text(_box.Text.Length == 0 ? "Tüm uygulamalar" : $"“{_box.Text}” için sonuçlar", new Rect(Pad + 2, GridTop - 22, PanelW - Pad * 2, 18), 11, Theme.Text3, FontWeight.Bold);
+
         // ızgara
-        var area = new Rect(W / 2 - ContentW / 2, TopPad, ContentW, H - TopPad - 30);
+        var area = new Rect(Pad, GridTop, GridW, ViewH);
         float maxScroll = MathF.Max(0, MathF.Ceiling(_items.Count / (float)Cols) * CellH - area.Height);
-        if (U.Hit(area) && U.Wheel != 0) _scroll.Target -= U.Wheel * CellH * 0.9f;
+        if (U.Hit(area) && U.Wheel != 0) _scroll.Target -= U.Wheel * CellH;
         _scroll.Target = Math.Clamp(_scroll.Target, 0, maxScroll);
 
-        if (_items.Count == 0)
-            G.Text("Uygulama bulunamadı", area, 16, Theme.Text3, FontWeight.SemiBold, TextAlignment.Center);
+        if (_items.Count == 0) G.Text("Uygulama bulunamadı", area, 14, Theme.Text3, FontWeight.SemiBold, TextAlignment.Center);
 
         G.PushClip(area);
-        int budget = 6; // kare başına ikon çözümü sınırı → takılma olmaz
+        int budget = 5;
         for (int i = 0; i < _items.Count; i++)
         {
             int col = i % Cols, row = i / Cols;
@@ -265,30 +282,24 @@ public sealed unsafe class LauncherWindow : ISurface
             if (hit && U.Pressed) _sel = i;
             bool sel = i == _sel;
             float hv = U.Anim(id, hit || sel ? 1 : 0);
-            if (hv > 0.01f) G.FillRound(new Rect(cell.X + 10, cell.Y + 6, cell.Width - 20, cell.Height - 12), 18, Theme.Rgb(0xFFFFFF, 0.1f * hv));
-            var ir = new Rect(cx - IconSize / 2, cy - CellH / 2 + 16, IconSize, IconSize);
-            var bmp = (budget > 0 || I.Apps.HasIcon(_items[i].Path, 64)) ? LoadIcon(_items[i].Path, ref budget) : null;
-            if (bmp != null) { G.Shadow(new Rect(ir.X + 6, ir.Y + 6, ir.Width - 12, ir.Height - 12), 12, 8, 0.35f * hv, 4); G.Bitmap(bmp, ir); }
-            else { G.VGradientRound(ir, 16, Theme.Rgb(0x3A3F52), Theme.Rgb(0x23262F)); G.Text(_items[i].Name.Length > 0 ? _items[i].Name[..1].ToUpper() : "?", ir, 24, Theme.Text, FontWeight.Bold, TextAlignment.Center); }
-            G.Text(_items[i].Name, new Rect(cell.X + 6, ir.Bottom + 8, cell.Width - 12, 34), 12, Theme.Text, FontWeight.SemiBold, TextAlignment.Center, wrap: true);
+            if (hv > 0.01f) G.FillRound(new Rect(cell.X + 6, cell.Y + 4, cell.Width - 12, cell.Height - 8), 14, Theme.Rgb(0xFFFFFF, 0.1f * hv));
+            var ir = new Rect(cx - IconSize / 2, cy - CellH / 2 + 12, IconSize, IconSize);
+            var bmp = (I.Apps.HasIcon(_items[i].Path, 64) || budget > 0) ? LoadIcon(_items[i].Path, ref budget) : null;
+            if (bmp != null) G.Bitmap(bmp, ir);
+            else { G.VGradientRound(ir, 11, Theme.Rgb(0x3A3F52), Theme.Rgb(0x23262F)); G.Text(_items[i].Name.Length > 0 ? _items[i].Name[..1].ToUpper() : "?", ir, 17, Theme.Text, FontWeight.Bold, TextAlignment.Center); }
+            G.Text(_items[i].Name, new Rect(cell.X + 3, ir.Bottom + 6, cell.Width - 6, 30), 10.5f, Theme.Text, FontWeight.SemiBold, TextAlignment.Center, wrap: true);
             if (hit) U.WantHand = true;
-            if (hit && U.Released && U.ActiveId == 0) { _sel = i; Launch(); G.PopClip(); G.PopTransform(); G.Alpha = 1; return; }
+            if (hit && U.Released && U.ActiveId == 0) { _sel = i; Launch(); G.PopClip(); return; }
         }
         G.PopClip();
         if (budget <= 0) U.NeedsFrame = true;
 
-        // alt kaydırma çubuğu ipucu
         if (maxScroll > 0)
         {
             float th = area.Height * area.Height / (area.Height + maxScroll);
             float ty = area.Y + (area.Height - th) * (_scroll.Value / maxScroll);
-            G.FillRound(new Rect(area.Right - 4, ty, 3, th), 1.5f, Theme.Rgb(0xFFFFFF, 0.2f));
+            G.FillRound(new Rect(area.Right - 3, ty, 3, th), 1.5f, Theme.Rgb(0xFFFFFF, 0.2f));
         }
-
-        G.PopTransform();
-        // boşluğa (ızgara/arama dışına) tıklama → kapan
-        if (U.Released && U.ActiveId == 0 && !area.Contains(U.Mouse) && !sb.Contains(U.Mouse)) Hide();
-        G.Alpha = 1;
     }
 
     ID2D1Bitmap? LoadIcon(string path, ref int budget)
