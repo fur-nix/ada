@@ -82,6 +82,13 @@ public sealed class AppsService
 
     public int IconCount => _icons.Count;
 
+    /// <summary>İkon zaten çözülmüş mü (başlatıcıda kare başına bütçe için).</summary>
+    public bool HasIcon(string path, float sizeDip = 48)
+    {
+        int bucket = sizeDip <= 32 ? 32 : sizeDip <= 64 ? 64 : sizeDip <= 128 ? 128 : 224;
+        return _icons.ContainsKey(bucket + "|" + path);
+    }
+
     public void ClearIconCache() { foreach (var b in _icons.Values) b?.Dispose(); _icons.Clear(); }
 
     public static void Launch(PinnedApp app)

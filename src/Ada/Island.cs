@@ -96,18 +96,20 @@ public sealed unsafe class Island
     public DockWindow? Dock;
     public RadialWindow? Radial;
     public AiWindow? AiWin;
+    public LauncherWindow? Launcher;
     public readonly Ada.Services.Ai.AiService Ai = new();
     public bool IslandOff => !Store.Current.IslandEnabled;
 
-    bool SurfacesAnimating() => Settings?.Animating == true || Spotlight?.Animating == true || Dock?.Animating == true || Radial?.Animating == true || AiWin?.Animating == true;
-    void FrameSurfaces() { Settings?.FrameIfNeeded(); Spotlight?.FrameIfNeeded(); Dock?.FrameIfNeeded(); Radial?.FrameIfNeeded(); AiWin?.FrameIfNeeded(); }
-    void InvalidateSurfaces() { Settings?.Invalidate(); Spotlight?.Invalidate(); Dock?.Invalidate(); Radial?.Invalidate(); AiWin?.Invalidate(); }
+    bool SurfacesAnimating() => Settings?.Animating == true || Spotlight?.Animating == true || Dock?.Animating == true || Radial?.Animating == true || AiWin?.Animating == true || Launcher?.Animating == true;
+    void FrameSurfaces() { Settings?.FrameIfNeeded(); Spotlight?.FrameIfNeeded(); Dock?.FrameIfNeeded(); Radial?.FrameIfNeeded(); AiWin?.FrameIfNeeded(); Launcher?.FrameIfNeeded(); }
+    void InvalidateSurfaces() { Settings?.Invalidate(); Spotlight?.Invalidate(); Dock?.Invalidate(); Radial?.Invalidate(); AiWin?.Invalidate(); Launcher?.Invalidate(); }
     ISurface? SurfaceFor(IntPtr h) =>
         Settings != null && h == Settings.Hwnd ? Settings :
         Spotlight != null && h == Spotlight.Hwnd ? Spotlight :
         Dock != null && h == Dock.Hwnd ? Dock :
         Radial != null && h == Radial.Hwnd ? Radial :
-        AiWin != null && h == AiWin.Hwnd ? AiWin : null;
+        AiWin != null && h == AiWin.Hwnd ? AiWin :
+        Launcher != null && h == Launcher.Hwnd ? Launcher : null;
     public IntPtr AppIconLarge, AppIconSmall;
 
     public Island()
@@ -353,6 +355,14 @@ public sealed unsafe class Island
 
     public void AiWindowClosed() => AiWin = null;
 
+    public void ToggleLauncher()
+    {
+        if (SnapMode) return;
+        Collapse();
+        Launcher ??= new LauncherWindow(this);
+        Launcher.Toggle();
+    }
+
     public void ToggleSpotlight()
     {
         if (SnapMode) return;
@@ -450,6 +460,9 @@ public sealed unsafe class Island
         Pump(1.5);
         sp.SnapRender("vis", Path.Combine(dir, "8-spotlight-uygulama.png"));
         sp.SnapRender("12*(3+4)", Path.Combine(dir, "8-spotlight-hesap.png"));
+        var lp = new LauncherWindow(this);
+        lp.SnapRender(Path.Combine(dir, "12-launcher.png"), "");
+        lp.SnapRender(Path.Combine(dir, "12-launcher-ara.png"), "c");
         Store.Current.Notch = true;
     }
 

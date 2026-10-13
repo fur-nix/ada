@@ -723,7 +723,7 @@ public sealed unsafe class DockWindow : ISurface
     }
     void Activate(Item it)
     {
-        if (it.Launcher) { Dispatcher.Post(() => I.ToggleSpotlight()); return; }
+        if (it.Launcher) { Dispatcher.Post(() => I.ToggleLauncher()); return; }
         if (it.Windows.Count > 0)
         {
             var w = it.Windows[0];

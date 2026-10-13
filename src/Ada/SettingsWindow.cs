@@ -830,20 +830,6 @@ public sealed unsafe class SettingsWindow : ISurface
         Stat(new Rect(b.X + (b.Width - 24) / 3 + 12, y, (b.Width - 24) / 3, 70), "ÇALIŞMA KÜMESİ", StatsService.Bytes(pmc.WorkingSetSize));
         Stat(new Rect(b.X + ((b.Width - 24) / 3 + 12) * 2, y, (b.Width - 24) / 3, 70), "ÇALIŞMA SÜRESİ", Uptime());
 
-        y += 92;
-        G.Text("YAKINDA", new Rect(b.X, y, 200, 16), 10, Theme.Text3, FontWeight.Bold);
-        string[] road =
-        {
-            "Dock'ta pencere önizlemeleri ve klasör yığınları",
-            "Üst menü çubuğu (macOS tarzı, uygulama menüleriyle)",
-            "Hava durumu, pano görselleri, takvim senkronu",
-            "NativeAOT derlemesi (daha da az RAM)"
-        };
-        for (int i = 0; i < road.Length; i++)
-        {
-            G.FillCircle(new Vector2(b.X + 6, y + 32 + i * 26), 3, Theme.Accent);
-            G.Text(road[i], new Rect(b.X + 18, y + 22 + i * 26, b.Width - 20, 20), 12.5f, Theme.Text2, FontWeight.Normal, font: Theme.TextFont);
-        }
     }
 
     void Stat(Rect r, string label, string value)
