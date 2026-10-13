@@ -23,7 +23,7 @@ public sealed unsafe class Island
     public const float Top = 6, Margin = 28;
     public const float CW = 200, CH = 34, PlayW = 262;
     public const float LW = 380, LH = 60;
-    public const float EW = 700, EH = 350, ER = 38;
+    public const float EW = 780, EH = 352, ER = 34;
 
     public IntPtr Hwnd;
     public IntPtr Monitor;
@@ -65,6 +65,9 @@ public sealed unsafe class Island
     RECT _mon;
     int _winX, _winY, _winW, _winH;
     bool _hidden, _shown;
+    bool _autoHidden; int _awayTicks;
+    /// <summary>Tam ekran yüzünden ya da "fare gelince göster" modunda çekilmiş.</summary>
+    bool Concealed => _hidden || _autoHidden;
 
     // döngü
     readonly Stopwatch _sw = Stopwatch.StartNew();
@@ -80,9 +83,14 @@ public sealed unsafe class Island
     int _mediaArtVersion = -1;
     bool _startupDone;
 
-    const int T_TICK = 1, T_COLLAPSE = 2, T_EQ = 3, T_BLINK = 4, T_LIVE = 5;
+    const int T_TICK = 1, T_COLLAPSE = 2, T_EQ = 3, T_BLINK = 4, T_LIVE = 5, T_HOVER = 6, T_PROX = 8;
     const int HOTKEY_ID = 7;
     const uint WM_QUIT = 0x12, WM_SETCURSOR = 0x20;
+    /// <summary>Başka bir Ada süreci (Başlat menüsü → "Ada Ayarları") bu mesajla ayarları açtırır.</summary>
+    public const uint WM_OPEN_SETTINGS = Win32.WM_APP + 2;
+
+    public SettingsWindow? Settings;
+    public IntPtr AppIconLarge, AppIconSmall;
 
     public Island()
     {
@@ -92,8 +100,8 @@ public sealed unsafe class Island
         Apps = new AppsService(G);
         Panels = new Panel[]
         {
-            new MediaPanel(this), new SystemPanel(this), new ControlsPanel(this),
-            new ClipboardPanel(this), new TasksPanel(this), new AppsPanel(this)
+            new ControlsPanel(this), new TodayPanel(this), new SystemPanel(this), new ClipboardPanel(this),
+            new AppsPanel(this), new WallpaperPanel(this), new PowerPanel(this)
         };
     }
 
@@ -110,6 +118,8 @@ public sealed unsafe class Island
             hCursor = Win32.LoadCursorW(IntPtr.Zero, 32512),
             lpszClassName = cls
         };
+        if (Environment.ProcessPath is string exe)
+            Win32.ExtractIconExW(exe, 0, out AppIconLarge, out AppIconSmall, 1);
         Win32.RegisterClassExW(ref wc);
         Hwnd = Win32.CreateWindowExW(
             Win32.WS_EX_LAYERED | Win32.WS_EX_TOOLWINDOW | Win32.WS_EX_TOPMOST | Win32.WS_EX_NOACTIVATE | Win32.WS_EX_ACCEPTFILES,
@@ -119,7 +129,6 @@ public sealed unsafe class Island
 
         Clip = new ClipboardService(Hwnd);
         Win32.DragAcceptFiles(Hwnd, true);
-        Win32.RegisterHotKey(Hwnd, HOTKEY_ID, Win32.MOD_CONTROL | Win32.MOD_ALT | Win32.MOD_NOREPEAT, 0x20); // Ctrl+Alt+Space
         Win32.SetTimer(Hwnd, T_TICK, 1000, IntPtr.Zero);
 
         var st = Store.Load();
@@ -127,11 +136,12 @@ public sealed unsafe class Island
         Store.Save();
         Tab = Math.Clamp(st.LastTab, 0, Panels.Length - 1);
         _notch.Value = _notch.Target = st.Notch ? 1 : 0;
+        ApplySettings();
 
         Media.Changed += OnMediaChanged;
         Media.TrackChanged += () =>
         {
-            if (!_startupDone || Mode == Mode.Expanded) return;
+            if (!_startupDone || Mode == Mode.Expanded || !Store.Current.NotifyTrack) return;
             ShowLive(new LiveInfo(Media.Title, Media.Artist, Glyph.Music, MediaColor, true, 0, 3.2f));
         };
         Media.Start();
@@ -141,6 +151,57 @@ public sealed unsafe class Island
         if (SnapMode) return;
         Win32.ShowWindow(Hwnd, Win32.SW_SHOWNOACTIVATE);
         _shown = true;
+        Shell.EnsureStartMenu();
+    }
+
+    // ================= ayarlar =================
+
+    static readonly (uint mods, uint vk)[] Hotkeys =
+    {
+        (Win32.MOD_CONTROL | Win32.MOD_ALT, 0x20), (Win32.MOD_CONTROL | 0x4, 0x20), (Win32.MOD_ALT | 0x4, 0x20)
+    };
+    public static readonly string[] HotkeyNames = { "Ctrl+Alt+Space", "Ctrl+Shift+Space", "Alt+Shift+Space", "Kapalı" };
+    public static readonly uint[] AccentPalette = { 0x8E9BFF, 0x7DB4FF, 0x5EEAD4, 0x4ADE80, 0xFBBF5B, 0xFF8A65, 0xF59AC9, 0xF5F5F7 };
+    public bool HotkeyOk { get; private set; } = true;
+
+    /// <summary>Ayarlar değişince çağrılır: tema, kısayol, yeniden çizim, kayıt.</summary>
+    public void ApplySettings(bool save = false)
+    {
+        var s = Store.Current;
+        s.Normalize();
+        Theme.Accent = uint.TryParse(s.Accent, System.Globalization.NumberStyles.HexNumber, null, out var hex) ? Theme.Rgb(hex) : Theme.Rgb(0x8E9BFF);
+        if (!SnapMode)
+        {
+            Win32.UnregisterHotKey(Hwnd, HOTKEY_ID);
+            HotkeyOk = true;
+            if (s.Hotkey < Hotkeys.Length)
+                HotkeyOk = Win32.RegisterHotKey(Hwnd, HOTKEY_ID, Hotkeys[s.Hotkey].mods | Win32.MOD_NOREPEAT, Hotkeys[s.Hotkey].vk);
+        }
+        if (!s.VisibleTabs().Contains(Tab)) Tab = s.VisibleTabs()[0];
+        if (!SnapMode)
+        {
+            if (s.Visibility == 0) { Win32.KillTimer(Hwnd, T_PROX); Reveal(); }
+            else Win32.SetTimer(Hwnd, T_PROX, 100, IntPtr.Zero);
+        }
+        if (!s.HideOnFullscreen && _hidden) { _hidden = false; if (!_shown && !SnapMode) { Win32.ShowWindow(Hwnd, Win32.SW_SHOWNOACTIVATE); _shown = true; } }
+        _indInit = false;
+        _dirty = true; _animating = true;
+        if (save) Store.Save();
+    }
+
+    public void OpenSettings()
+    {
+        if (SnapMode) return;
+        Collapse();
+        Settings ??= new SettingsWindow(this);
+        Settings.Show();
+        _animating = true;
+    }
+
+    public void SettingsClosed()
+    {
+        Settings = null;
+        _trimmed = false; _idleTicks = 0; // bellek kırpma tekrar çalışsın
     }
 
     // ================= --snap: ekran dışı görsel test =================
@@ -178,8 +239,8 @@ public sealed unsafe class Island
         for (int t = 0; t < Panels.Length; t++)
         {
             Expand(t);
-            if (t == 2) Pump(1.5);
-            Shot($"3-sekme{t}-{TabNames[t]}");
+            if (t is 0 or 2 or 4) Pump(1.5);
+            Shot($"3-sekme{t}-{TabName(t)}");
         }
         // morf ortası (animasyon karesi)
         Collapse(); for (int i = 0; i < 100; i++) Frame();
@@ -188,6 +249,14 @@ public sealed unsafe class Island
         Store.Current.Notch = true;
         Collapse(); Shot("5-centik-kapali");
         Expand(2); Shot("5-centik-acik");
+        Collapse();
+        Store.Current.Notch = false; Shot("5-yuzen-kapali");
+        Store.Current.Notch = true;
+        // ayarlar penceresi sayfaları
+        var sw = new SettingsWindow(this);
+        Settings = sw;
+        for (int p = 0; p < SettingsWindow.PageCount; p++) sw.SnapPage(p, Path.Combine(dir, $"6-ayarlar{p}.png"));
+        Settings = null;
     }
 
     void UpdateMonitor()
@@ -203,10 +272,19 @@ public sealed unsafe class Island
         _dirty = true;
     }
 
+    public static IntPtr ProcPtr => (IntPtr)(delegate* unmanaged<IntPtr, uint, IntPtr, IntPtr, IntPtr>)&WndProcStatic;
+    public float Scale => _scale;
+    public RECT MonitorRect => _mon;
+
     [UnmanagedCallersOnly]
     static IntPtr WndProcStatic(IntPtr h, uint m, IntPtr w, IntPtr l)
     {
-        try { return Instance.WndProc(h, m, w, l); }
+        try
+        {
+            var s = Instance.Settings;
+            if (s != null && h == s.Hwnd) return s.WndProc(h, m, w, l);
+            return Instance.WndProc(h, m, w, l);
+        }
         catch (Exception e) { Log.Error("WndProc " + m, e); return Win32.DefWindowProcW(h, m, w, l); }
     }
 
@@ -277,8 +355,8 @@ public sealed unsafe class Island
             case Win32.WM_CLIPBOARDUPDATE:
                 if (Clip.OnUpdate(out var text))
                 {
-                    if (Mode != Mode.Expanded)
-                        ShowLive(new LiveInfo("Kopyalandı", new ClipItem(text!, DateTime.Now).Preview, Glyph.Copy, Theme.Mint, false, 3, 1.8f));
+                    if (Mode != Mode.Expanded && Store.Current.NotifyClipboard)
+                        ShowLive(new LiveInfo("Kopyalandı", new ClipItem(text!, DateTime.Now).Preview, Glyph.Copy, Theme.Accent, false, 3, 1.8f));
                     _dirty = true;
                 }
                 return 0;
@@ -295,6 +373,10 @@ public sealed unsafe class Island
             case Dispatcher.WM_RUN:
                 Dispatcher.Drain();
                 _dirty = true;
+                Settings?.Invalidate();
+                return 0;
+            case WM_OPEN_SETTINGS:
+                OpenSettings();
                 return 0;
             case Win32.WM_DESTROY:
                 Win32.PostQuitMessage(0);
@@ -310,7 +392,7 @@ public sealed unsafe class Island
         MSG msg;
         while (true)
         {
-            if (_animating)
+            if (_animating || Settings?.Animating == true)
             {
                 while (Win32.PeekMessageW(out msg, IntPtr.Zero, 0, 0, Win32.PM_REMOVE))
                 {
@@ -318,9 +400,11 @@ public sealed unsafe class Island
                     Win32.TranslateMessage(ref msg);
                     Win32.DispatchMessageW(ref msg);
                 }
-                if (!_shown && _hidden) { _animating = false; continue; } // gizliyken asla dönme
+                if (!_shown && Concealed) _animating = false; // gizliyken ada için asla dönme
                 double t0 = _sw.Elapsed.TotalMilliseconds;
-                Frame();
+                if (_animating || _dirty) Frame();
+                Settings?.FrameIfNeeded();
+                if (!_animating && Settings?.Animating != true) continue;
                 // vsync; DwmFlush başarısız olur ya da anında dönerse döngüyü ~120 fps'te sınırla
                 if (Win32.DwmFlush() != 0 || _sw.Elapsed.TotalMilliseconds - t0 < 4) Thread.Sleep(8);
             }
@@ -336,6 +420,7 @@ public sealed unsafe class Island
                     Win32.DispatchMessageW(ref msg);
                 }
                 if (_dirty) Frame();
+                Settings?.FrameIfNeeded();
             }
         }
     }
@@ -387,7 +472,7 @@ public sealed unsafe class Island
         U.EndFrame();
         U.GcAnims();
 
-        if (_hidden && _hideY.Settled && _shown) { Win32.ShowWindow(Hwnd, Win32.SW_HIDE); _shown = false; }
+        if (Concealed && _hideY.Settled && _shown) { Win32.ShowWindow(Hwnd, Win32.SW_HIDE); _shown = false; }
     }
 
     void UpdateMode()
@@ -395,7 +480,10 @@ public sealed unsafe class Island
         bool over = OverIsland();
         switch (Mode)
         {
-            case Mode.Collapsed when over: Mode = Mode.Hover; break;
+            case Mode.Collapsed when over:
+                Mode = Mode.Hover;
+                if (Store.Current.OpenOnHover) Win32.SetTimer(Hwnd, T_HOVER, 220, IntPtr.Zero);
+                break;
             case Mode.Hover when !over: Mode = Mode.Collapsed; break;
             case Mode.Expanded:
                 if (over || U.Down || _keyboardMode) CancelCollapse();
@@ -415,22 +503,23 @@ public sealed unsafe class Island
 
     void UpdateGeometry(float dt)
     {
-        bool playing = Media.HasSession && Media.Playing;
-        float cw = playing ? PlayW : CW;
+        float k = SizeK, rnd = Store.Current.Roundness;
+        float cw = IdleWidth(k), ch = CH * k;
         (float w, float h, float r) target = Mode switch
         {
-            Mode.Hover => (cw + 16, CH + 4, (CH + 4) / 2),
-            Mode.Live => (LW, LH, LH / 2),
-            Mode.Expanded => (EW, EH, ER),
-            _ => (cw, CH, CH / 2),
+            Mode.Hover => (cw + 16 * k, ch + 4 * k, (ch + 4 * k) / 2 * rnd),
+            Mode.Live => (LW, LH, LH / 2 * rnd),
+            Mode.Expanded => (EW, EH, ER * (0.5f + 0.5f * rnd)),
+            _ => (cw, ch, ch / 2 * rnd),
         };
         bool growing = target.h > _h.Target + 0.5f || target.w > _w.Target + 0.5f;
-        float damp = growing ? 24f : 31f, stiff = growing ? 300f : 340f;
+        float sp = new[] { 0.6f, 1f, 1.55f }[Store.Current.AnimSpeed];
+        float damp = (growing ? 24f : 31f) * MathF.Sqrt(sp), stiff = (growing ? 300f : 340f) * sp;
         _w.Damping = _h.Damping = _r.Damping = damp;
         _w.Stiffness = _h.Stiffness = _r.Stiffness = stiff;
         _w.Target = target.w; _h.Target = target.h; _r.Target = target.r;
         _w.Step(dt); _h.Step(dt); _r.Step(dt);
-        _hideY.Target = _hidden ? -(CH + Top + 14) : 0;
+        _hideY.Target = Concealed ? -(CH * 1.2f + Top + 16) : 0;
         _hideY.Step(dt);
 
         _notch.Target = Store.Current.Notch ? 1 : 0; _notch.Step(dt);
@@ -456,7 +545,7 @@ public sealed unsafe class Island
         var body = new Rect(isl.X, isl.Y - R * n, isl.Width, isl.Height + R * n);
 
         // gölge + gövde
-        G.Shadow(body, R, 7 + 11 * e, (0.30f + 0.12f * e) * (1 - 0.35f * n), 3 + 5 * e);
+        if (Store.Current.Shadow) G.Shadow(body, R, 7 + 11 * e, (0.30f + 0.12f * e) * (1 - 0.35f * n), 3 + 5 * e);
         G.FillRound(body, R, Theme.Island);
         if (n > 0.01f)
         {
@@ -496,30 +585,90 @@ public sealed unsafe class Island
     void DrawCollapsed(Rect isl, float a)
     {
         G.Alpha = a;
-        bool savedInside = U.Inside;
-        var cy = isl.CenterY;
-        bool playing = Media.HasSession && Media.Playing;
-        var time = DateTime.Now.ToString("HH:mm");
-        G.Text(time, new Rect(isl.CenterX - 40, isl.Y, 80, isl.Height), 13.5f, Theme.Text, FontWeight.SemiBold, TextAlignment.Center);
+        DrawIdle(isl, SizeK);
+        G.Alpha = 1;
+    }
+
+    public static readonly float[] SizeFactors = { 0.88f, 1f, 1.14f };
+    float SizeK => SizeFactors[Store.Current.Size];
+    bool PlayingInIdle => Media.HasSession && Media.Playing && Store.Current.MediaInIdle;
+
+    string? SlotText(Slot s)
+    {
+        var now = DateTime.Now;
+        switch (s)
+        {
+            case Slot.Clock: return now.ToString("HH:mm");
+            case Slot.ClockSeconds: return now.ToString("HH:mm:ss");
+            case Slot.Date: return now.ToString("d MMM ddd", Tr);
+            case Slot.Battery:
+                Stats.SampleBatteryOnly();
+                return Stats.Battery >= 0 ? $"%{Stats.Battery}" : now.ToString("d MMM", Tr);
+            case Slot.CpuRam: return $"{Stats.Cpu * 100:0}% · {Stats.Ram * 100:0}%";
+            default: return null;
+        }
+    }
+
+    /// <summary>Boştaki yuvaların ihtiyaç duyduğu genişlik (metinler çakışmasın).</summary>
+    float IdleWidth(float k)
+    {
+        var s = Store.Current;
+        bool playing = PlayingInIdle;
+        float side(Slot slot, bool media) => media ? 36 * k : slot switch
+        {
+            Slot.None => 8, Slot.Dot => 22 * k,
+            _ => G.Measure(SlotText(slot) ?? "", 11.5f * k, FontWeight.SemiBold) + 22 * k
+        };
+        float center = s.IdleCenter is Slot.None or Slot.Dot ? 20 * k : G.Measure(SlotText(s.IdleCenter) ?? "", 13.5f * k, FontWeight.SemiBold) + 20 * k;
+        float l = side(s.IdleLeft, playing), r = side(s.IdleRight, playing);
+        return MathF.Max((playing ? PlayW : CW) * k, center + 2 * MathF.Max(l, r) + 8);
+    }
+
+    /// <summary>Kapalı hapın içeriği (ayarlar önizlemesi de bunu kullanır).</summary>
+    public void DrawIdle(Rect isl, float k)
+    {
+        var s = Store.Current;
+        float cy = isl.CenterY;
+        bool playing = PlayingInIdle;
+
+        void Side(Slot slot, bool left)
+        {
+            if (slot == Slot.Dot)
+            {
+                G.FillCircle(new Vector2(left ? isl.X + 18 * k : isl.Right - 18 * k, cy), 3.2f * k, Theme.Accent.WithA(0.9f));
+                return;
+            }
+            var txt = SlotText(slot);
+            if (txt == null) return;
+            float fs = 11.5f * k;
+            var r = left ? new Rect(isl.X + 13 * k, isl.Y, isl.Width / 2, isl.Height) : new Rect(isl.CenterX, isl.Y, isl.Width / 2 - 13 * k, isl.Height);
+            G.Text(txt, r, fs, Theme.Text2, FontWeight.SemiBold, left ? TextAlignment.Leading : TextAlignment.Trailing);
+            if (slot == Slot.Battery && Stats.Battery >= 0 && Stats.Charging)
+            {
+                float tw = G.Measure(txt, fs, FontWeight.SemiBold);
+                float ix = left ? isl.X + 13 * k + tw + 9 * k : isl.Right - 13 * k - tw - 9 * k;
+                G.Icon(Glyph.Charging, new Vector2(ix, cy), 10 * k, Theme.Green);
+            }
+        }
+
+        // orta
+        if (s.IdleCenter == Slot.Dot) G.FillCircle(new Vector2(isl.CenterX, cy), 3.4f * k, Theme.Accent);
+        else if (SlotText(s.IdleCenter) is string c)
+            G.Text(c, new Rect(isl.CenterX - 80, isl.Y, 160, isl.Height), 13.5f * k, Theme.Text, FontWeight.SemiBold, TextAlignment.Center);
+
         if (playing)
         {
-            var ar = new Rect(isl.X + 7, cy - 11, 22, 22);
-            if (MediaArt != null) G.BitmapRound(MediaArt, ar, 7);
-            else { G.FillRound(ar, 7, MediaColor.WithA(0.35f)); G.Icon(Glyph.Music, new Vector2(ar.CenterX, ar.CenterY), 11, Theme.Text); }
-            DrawBars(new Vector2(isl.Right - 30, cy), 14, MediaColor, true);
+            float a = 22 * k;
+            var ar = new Rect(isl.X + 7 * k, cy - a / 2, a, a);
+            if (MediaArt != null) G.BitmapRound(MediaArt, ar, 7 * k);
+            else { G.FillRound(ar, 7 * k, MediaColor.WithA(0.35f)); G.Icon(Glyph.Music, new Vector2(ar.CenterX, ar.CenterY), 11 * k, Theme.Text); }
+            DrawBars(new Vector2(isl.Right - 30 * k, cy), 14 * k, MediaColor, true);
         }
         else
         {
-            // sol: küçük nabız noktası, sağ: pil/tarih
-            G.FillCircle(new Vector2(isl.X + 18, cy), 3.2f, Theme.Accent.WithA(0.9f));
-            Stats.SampleBatteryOnly();
-            string right = Stats.Battery >= 0 ? $"{Stats.Battery}%" : DateTime.Now.ToString("d MMM", Tr);
-            G.Text(right, new Rect(isl.Right - 70, isl.Y, 56, isl.Height), 11.5f, Theme.Text2, FontWeight.SemiBold, TextAlignment.Trailing);
-            if (Stats.Battery >= 0 && Stats.Charging)
-                G.Icon(Glyph.Charging, new Vector2(isl.Right - 14 - G.Measure(right, 11.5f, FontWeight.SemiBold) - 10, cy), 10, Theme.Green);
+            Side(s.IdleLeft, true);
+            Side(s.IdleRight, false);
         }
-        U.Inside = savedInside;
-        G.Alpha = 1;
     }
 
     public static readonly System.Globalization.CultureInfo Tr = new("tr-TR");
@@ -572,9 +721,11 @@ public sealed unsafe class Island
         if (!interactive) U.Inside = false;
 
         G.Alpha = a;
-        DrawTabs(cx, isl.Y + 16, a);
+        DrawTabs(cx, isl.Y + 10, a);
+        if (U.IconButton(Ui.Id("open.settings"), new Vector2(cx + EW / 2 - 28, isl.Y + 25), 13, Glyph.Settings, 12, Theme.Text3))
+            Dispatcher.Post(OpenSettings);
 
-        var area = new Rect(cx - EW / 2 + 24, isl.Y + 64, EW - 48, EH - 64 - 22);
+        var area = new Rect(cx - EW / 2 + 26, isl.Y + 54, EW - 52, EH - 54 - 20);
         if (_tabT < 1 && _prevTab >= 0)
         {
             float t = Ease.OutCubic(_tabT);
@@ -600,59 +751,100 @@ public sealed unsafe class Island
         G.PopTransform();
     }
 
-    static readonly string[] TabNames = { "Medya", "Sistem", "Kontroller", "Pano", "Görevler", "Uygulamalar" };
-    static readonly string[] TabGlyphs = { Glyph.Music, Glyph.Pulse, Glyph.Sliders, Glyph.Clipboard, Glyph.Tasks, Glyph.Apps };
+    public string TabName(int i) => Panels[i].Name;
 
+    /// <summary>Videodaki gibi sade metin sekmeleri: aktif olan vurgu renginde, altında kayan küçük çizgi.</summary>
     void DrawTabs(float cx, float y, float a)
     {
-        const float h = 34, gap = 4, fs = 12.5f;
-        Span<float> widths = stackalloc float[TabNames.Length];
+        const float h = 30, pad = 14, fs = 12.5f;
+        var vis = Store.Current.VisibleTabs();
+        Span<float> widths = stackalloc float[vis.Count];
         float total = 0;
-        for (int i = 0; i < TabNames.Length; i++)
+        for (int k = 0; k < vis.Count; k++)
         {
-            widths[i] = 16 + 7 + G.Measure(TabNames[i], fs, FontWeight.SemiBold) + 30;
-            total += widths[i] + (i > 0 ? gap : 0);
+            widths[k] = G.Measure(Panels[vis[k]].Name, fs, FontWeight.SemiBold) + pad * 2;
+            total += widths[k];
         }
         float x = cx - total / 2;
-        float activeX = 0, activeW = 0;
-        float xx = x;
-        for (int i = 0; i < TabNames.Length; i++)
+        float activeX = 0, activeW = 0, xx = x;
+        for (int k = 0; k < vis.Count; k++)
         {
-            if (i == Tab) { activeX = xx; activeW = widths[i]; }
-            xx += widths[i] + gap;
+            if (vis[k] == Tab) { activeX = xx; activeW = widths[k]; }
+            xx += widths[k];
         }
         if (!_indInit) { _indX.Snap(activeX - cx); _indW.Snap(activeW); _indInit = true; }
         _indX.Target = activeX - cx; _indW.Target = activeW;
         _indX.Step(U.Dt); _indW.Step(U.Dt);
 
-        // kapsayıcı + kayan gösterge
-        G.FillRound(new Rect(x - 4, y - 4, total + 8, h + 8), (h + 8) / 2, Theme.Rgb(0xFFFFFF, 0.04f));
-        var ind = new Rect(cx + _indX.Value, y, _indW.Value, h);
-        G.FillRound(ind, h / 2, Theme.Rgb(0xFFFFFF, 0.12f));
-        G.StrokeRound(ind, h / 2, Theme.Rgb(0xFFFFFF, 0.08f), 1);
+        // kayan alt çizgi
+        float lw = MathF.Max(12, _indW.Value - pad * 2 - 8);
+        G.FillRound(new Rect(cx + _indX.Value + (_indW.Value - lw) / 2, y + h - 3, lw, 3), 1.5f, Theme.Accent);
 
-        for (int i = 0; i < TabNames.Length; i++)
+        for (int k = 0; k < vis.Count; k++)
         {
-            var r = new Rect(x, y, widths[i], h);
+            int i = vis[k];
+            var r = new Rect(x, y, widths[k], h);
             int id = Ui.Id("tab", i);
             if (U.Click(id, r)) SwitchTab(i);
             float hv = U.Anim(id, U.Hit(r) ? 1 : 0);
-            bool act = i == Tab;
-            var col = act ? Theme.Text : Theme.Mix(Theme.Text3, Theme.Text, 0.25f + 0.6f * hv);
-            if (!act && hv > 0.01f) G.FillRound(r, h / 2, Theme.Rgb(0xFFFFFF, 0.05f * hv));
-            G.Icon(TabGlyphs[i], new Vector2(x + 15 + 8, y + h / 2), 13, act ? Theme.Accent : col);
-            G.Text(TabNames[i], new Rect(x + 15 + 16 + 7, y, widths[i] - 38, h), fs, col, FontWeight.SemiBold);
-            x += widths[i] + gap;
+            float act = U.Anim(id + 77, i == Tab ? 1 : 0, 14);
+            var col = Theme.Mix(Theme.Mix(Theme.Text3, Theme.Text, 0.15f + 0.6f * hv), Theme.Accent, act);
+            G.Text(Panels[i].Name, r, fs, col, i == Tab ? FontWeight.Bold : FontWeight.SemiBold, TextAlignment.Center);
+            x += widths[k];
         }
     }
 
     // ================= durum geçişleri =================
 
+    /// <summary>"Fare gelince göster" modunda çekilmiş adayı geri getirir.</summary>
+    void Reveal()
+    {
+        _awayTicks = 0;
+        if (!_autoHidden) return;
+        _autoHidden = false;
+        if (!_shown && !SnapMode) { Win32.ShowWindow(Hwnd, Win32.SW_SHOWNOACTIVATE); _shown = true; }
+        UpdateEqTimer();
+        _dirty = true; _animating = true;
+    }
+
+    void Conceal()
+    {
+        if (_autoHidden) return;
+        _autoHidden = true;
+        Mode = Mode.Collapsed;
+        UpdateEqTimer();
+        _dirty = true; _animating = true;
+    }
+
+    /// <summary>100 ms'de bir (yalnızca görünürlük modu 1/2 iken): imleç üst kenara geldi mi, ada boşta mı.</summary>
+    void ProximityTick()
+    {
+        var s = Store.Current;
+        if (s.Visibility == 0 || _hidden || SnapMode) return;
+        if (!Win32.GetCursorPos(out var p)) return;
+        int cx = (_mon.Left + _mon.Right) / 2;
+        bool nearTop = p.Y <= _mon.Top + 2 && Math.Abs(p.X - cx) < 280 * _scale && p.X >= _mon.Left && p.X < _mon.Right;
+        if (_autoHidden)
+        {
+            if (s.Visibility == 1 && nearTop) Reveal();
+            return;
+        }
+        bool overWin = p.X >= _winX && p.X <= _winX + _winW && p.Y >= _mon.Top && p.Y <= _winY + _winH + 8;
+        if (Mode == Mode.Collapsed && !overWin && !nearTop && !_keyboardMode)
+        {
+            if (++_awayTicks >= 12) Conceal(); // ~1.2 sn boşta → çekil
+        }
+        else _awayTicks = 0;
+    }
+
     public void Expand(int tab)
     {
         if (_hidden) return;
+        Reveal();
         _live = null;
         Win32.KillTimer(Hwnd, T_LIVE);
+        var vis = Store.Current.VisibleTabs();
+        if (!vis.Contains(tab)) tab = vis[0];
         if (tab != Tab) { Panels[Tab].OnHide(); Tab = tab; }
         _tabT = 1; _prevTab = -1; _indInit = false; // gösterge eski sekmeden kaymasın
         Mode = Mode.Expanded;
@@ -682,7 +874,8 @@ public sealed unsafe class Island
         if (i == Tab) return;
         Panels[Tab].OnHide();
         EndKeyboard(false);
-        _prevTab = Tab; _tabDir = i > Tab ? 1 : -1;
+        var vis = Store.Current.VisibleTabs();
+        _prevTab = Tab; _tabDir = vis.IndexOf(i) > vis.IndexOf(Tab) ? 1 : -1;
         Tab = i; _tabT = 0;
         Panels[Tab].OnShow();
         _dirty = true;
@@ -692,7 +885,7 @@ public sealed unsafe class Island
     {
         if (_collapsePending) return;
         _collapsePending = true;
-        Win32.SetTimer(Hwnd, T_COLLAPSE, 380, IntPtr.Zero);
+        Win32.SetTimer(Hwnd, T_COLLAPSE, (uint)Store.Current.CollapseDelayMs, IntPtr.Zero);
     }
 
     void CancelCollapse()
@@ -705,7 +898,8 @@ public sealed unsafe class Island
     void ShowLive(LiveInfo info)
     {
         if (_hidden) return;
-        if (Mode == Mode.Expanded) { if (!info.IsMedia && info.TabOnClick == 4) _pendingLive = info; return; }
+        if (Mode == Mode.Expanded) { if (!info.IsMedia && info.TabOnClick == 1) _pendingLive = info; return; }
+        Reveal(); // bildirimler gizli moddayken de görünür
         _live = info;
         Mode = Mode.Live;
         Win32.SetTimer(Hwnd, T_LIVE, (uint)(info.Seconds * 1000), IntPtr.Zero);
@@ -746,9 +940,13 @@ public sealed unsafe class Island
         if (Mode == Mode.Expanded && Panels[Tab].OnKey(vk, ctrl)) return;
         if (vk == 0x1B) { Collapse(); return; } // Esc
         if (Mode != Mode.Expanded) return;
-        if (vk == 0x09 || vk == 0x27) SwitchTab((Tab + (ctrl && Win32.GetKeyState(0x10) < 0 ? Panels.Length - 1 : 1)) % Panels.Length);
-        else if (vk == 0x25) SwitchTab((Tab + Panels.Length - 1) % Panels.Length);
-        else if (vk >= 0x31 && vk <= 0x36) SwitchTab(vk - 0x31);
+        var vis = Store.Current.VisibleTabs();
+        int pos = Math.Max(0, vis.IndexOf(Tab)), n = vis.Count;
+        bool shift = Win32.GetKeyState(0x10) < 0;
+        if (vk == 0x09) SwitchTab(vis[(pos + (shift ? n - 1 : 1)) % n]);
+        else if (vk == 0x27) SwitchTab(vis[(pos + 1) % n]);
+        else if (vk == 0x25) SwitchTab(vis[(pos + n - 1) % n]);
+        else if (vk >= 0x31 && vk < 0x31 + n) SwitchTab(vis[vk - 0x31]);
     }
 
     void OnTimer(int id)
@@ -764,6 +962,13 @@ public sealed unsafe class Island
             case T_EQ:
             case T_BLINK:
                 _dirty = true; break;
+            case T_PROX:
+                ProximityTick();
+                break;
+            case T_HOVER:
+                Win32.KillTimer(Hwnd, T_HOVER);
+                if (Mode == Mode.Hover && OverIsland()) Expand(Tab);
+                break;
             case T_LIVE:
                 Win32.KillTimer(Hwnd, T_LIVE);
                 if (Mode == Mode.Live) { Mode = OverIsland() ? Mode.Hover : Mode.Collapsed; _dirty = true; }
@@ -782,6 +987,13 @@ public sealed unsafe class Island
         _dbgFrames = 0;
         if (now.Minute != _minute) { _minute = now.Minute; _dirty = true; }
         if (Mode == Mode.Expanded) Panels[Tab].Tick();
+        ((TodayPanel)Panels[1]).BackgroundTick();
+        Settings?.Invalidate();
+        // boştaki yuvalar: saniyeli saat her saniye, CPU·RAM iki saniyede bir
+        var st = Store.Current;
+        bool Uses(Slot s) => st.IdleLeft == s || st.IdleCenter == s || st.IdleRight == s;
+        if (Mode != Mode.Expanded && Uses(Slot.ClockSeconds)) _dirty = true;
+        if (Mode != Mode.Expanded && Uses(Slot.CpuRam) && now.Second % 2 == 0) { Stats.SampleLight(); _dirty = true; }
         CheckReminders(now);
         if (now.Second % 2 == 0 && !SnapMode) CheckFullscreen();
 
@@ -806,13 +1018,15 @@ public sealed unsafe class Island
         {
             if (t.Done || t.Notified || t.Due is not DateTime d || d > now) continue;
             t.Notified = true; changed = true;
-            MessageBeep(0x40);
-            ShowLive(new LiveInfo(t.Text, "Hatırlatıcı · " + d.ToString("HH:mm"), Glyph.Bell, Theme.Amber, false, 4, 9f));
+            if (!Store.Current.NotifyReminder) continue;
+            if (Store.Current.ReminderSound) Beep();
+            ShowLive(new LiveInfo(t.Text, "Hatırlatıcı · " + d.ToString("HH:mm"), Glyph.Bell, Theme.Orange, false, 1, 9f));
         }
         if (changed) Store.Save();
     }
 
     [DllImport("user32.dll")] static extern bool MessageBeep(uint type);
+    public void Beep() => MessageBeep(0x40);
 
     void CheckFullscreen()
     {
@@ -840,7 +1054,7 @@ public sealed unsafe class Island
 
     void UpdateEqTimer()
     {
-        bool need = Media.HasSession && Media.Playing && Mode != Mode.Expanded && !_hidden;
+        bool need = Media.HasSession && Media.Playing && Mode != Mode.Expanded && !Concealed;
         if (need) Win32.SetTimer(Hwnd, T_EQ, 70, IntPtr.Zero);
         else Win32.KillTimer(Hwnd, T_EQ);
     }
@@ -851,7 +1065,7 @@ public sealed unsafe class Island
         {
             _mediaArtVersion = Media.ArtVersion;
             var old = MediaArt;
-            ((MediaPanel)Panels[0]).PushOldArt(old);
+            ((ControlsPanel)Panels[0]).Media.PushOldArt(old);
             MediaArt = null;
             if (Media.Art != null)
             {
@@ -881,14 +1095,16 @@ public sealed unsafe class Island
         if (added > 0)
         {
             Store.Save();
-            if (Mode == Mode.Expanded) SwitchTab(5);
-            else ShowLive(new LiveInfo($"{added} uygulama eklendi", "Uygulamalar sekmesinde", Glyph.Apps, Theme.Accent, false, 5, 2f));
+            if (Mode == Mode.Expanded) SwitchTab(4);
+            else ShowLive(new LiveInfo($"{added} uygulama eklendi", "Uygulamalar sekmesinde", Glyph.Apps, Theme.Accent, false, 4, 2f));
         }
     }
 
     void ShowMenu()
     {
         var menu = Win32.CreatePopupMenu();
+        Win32.AppendMenuW(menu, Win32.MF_STRING, 6, "Ada Ayarları…");
+        Win32.AppendMenuW(menu, Win32.MF_SEPARATOR, 0, null);
         Win32.AppendMenuW(menu, Win32.MF_STRING | (!NotchStyle ? Win32.MF_CHECKED : 0), 4, "Görünüm: Ada (yüzen)");
         Win32.AppendMenuW(menu, Win32.MF_STRING | (NotchStyle ? Win32.MF_CHECKED : 0), 5, "Görünüm: Çentik (üste yapışık)");
         Win32.AppendMenuW(menu, Win32.MF_SEPARATOR, 0, null);
@@ -907,6 +1123,7 @@ public sealed unsafe class Island
             case 3: Store.Save(); Win32.PostQuitMessage(0); break;
             case 4: NotchStyle = false; break;
             case 5: NotchStyle = true; break;
+            case 6: OpenSettings(); break;
         }
     }
 

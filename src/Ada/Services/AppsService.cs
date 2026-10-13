@@ -97,12 +97,12 @@ public sealed class AppsService
     }
 
     /// <summary>Dosya seçme penceresi (exe / kısayol / herhangi bir dosya).</summary>
-    public static unsafe string? PickFile(IntPtr owner)
+    public static unsafe string? PickFile(IntPtr owner, string title = "Ada'ya uygulama ekle", string? filter = null)
     {
-        const string filter = "Uygulamalar ve kısayollar\0*.exe;*.lnk;*.url;*.bat;*.cmd\0Tüm dosyalar\0*.*\0\0";
+        filter ??= "Uygulamalar ve kısayollar\0*.exe;*.lnk;*.url;*.bat;*.cmd\0Tüm dosyalar\0*.*\0\0";
         var fileBuf = Marshal.AllocHGlobal(2048 * 2);
         var filterPtr = Marshal.StringToHGlobalUni(filter);
-        var title = Marshal.StringToHGlobalUni("Ada'ya uygulama ekle");
+        var titlePtr = Marshal.StringToHGlobalUni(title);
         var startDir = Marshal.StringToHGlobalUni(Environment.GetFolderPath(Environment.SpecialFolder.CommonStartMenu) + @"\Programs");
         try
         {
@@ -110,7 +110,7 @@ public sealed class AppsService
             var ofn = new OPENFILENAME
             {
                 lStructSize = Marshal.SizeOf<OPENFILENAME>(), hwndOwner = owner, lpstrFilter = filterPtr, nFilterIndex = 1,
-                lpstrFile = fileBuf, nMaxFile = 2048, lpstrTitle = title, lpstrInitialDir = startDir,
+                lpstrFile = fileBuf, nMaxFile = 2048, lpstrTitle = titlePtr, lpstrInitialDir = startDir,
                 // OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST | OFN_NODEREFERENCELINKS | OFN_EXPLORER
                 Flags = 0x1000 | 0x800 | 0x100000 | 0x80000
             };
@@ -118,7 +118,7 @@ public sealed class AppsService
         }
         finally
         {
-            Marshal.FreeHGlobal(fileBuf); Marshal.FreeHGlobal(filterPtr); Marshal.FreeHGlobal(title); Marshal.FreeHGlobal(startDir);
+            Marshal.FreeHGlobal(fileBuf); Marshal.FreeHGlobal(filterPtr); Marshal.FreeHGlobal(titlePtr); Marshal.FreeHGlobal(startDir);
         }
     }
 

@@ -10,7 +10,8 @@
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
     <ApplicationManifest>app.manifest</ApplicationManifest>
     <AssemblyName>Ada</AssemblyName>
-    <Version>1.0.0</Version>
+    <ApplicationIcon>ada.ico</ApplicationIcon>
+    <Version>1.1.0</Version>
 
     <!-- Düşük bellek ayarları -->
     <ServerGarbageCollection>false</ServerGarbageCollection>

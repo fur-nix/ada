@@ -87,6 +87,112 @@ public sealed class StatsService : IDisposable
         _rx = rx; _tx = tx; _netStamp = now;
     }
 
+    /// <summary>Kapalı hapta CPU·RAM yuvası için hafif örnekleme.</summary>
+    public void SampleLight() { SampleCpu(); SampleRam(); }
+
+    // ---------- RAM'e göre en çok kullanan uygulamalar (arka planda) ----------
+    public sealed record TopApp(string Name, long Bytes, string? Path);
+    public IReadOnlyList<TopApp> TopApps { get; private set; } = Array.Empty<TopApp>();
+    bool _topBusy;
+
+    public void RefreshTopApps()
+    {
+        if (_topBusy) return;
+        _topBusy = true;
+        Task.Run(() =>
+        {
+            try
+            {
+                var groups = new Dictionary<string, (long bytes, string? path)>(StringComparer.OrdinalIgnoreCase);
+                foreach (var p in System.Diagnostics.Process.GetProcesses())
+                {
+                    try
+                    {
+                        if (p.Id <= 4 || p.ProcessName is "Idle" or "System" or "Memory Compression" or "Registry" or "svchost" or "dwm" or "csrss") continue;
+                        var ws = p.WorkingSet64;
+                        groups.TryGetValue(p.ProcessName, out var g);
+                        groups[p.ProcessName] = (g.bytes + ws, g.path ?? ImagePath(p.Id));
+                    }
+                    catch { }
+                    finally { p.Dispose(); }
+                }
+                var top = groups.OrderByDescending(kv => kv.Value.bytes).Take(4)
+                    .Select(kv => new TopApp(Pretty(kv.Key, kv.Value.path), kv.Value.bytes, kv.Value.path)).ToList();
+                Dispatcher.Post(() => TopApps = top);
+            }
+            catch (Exception e) { Log.Error("TopApps", e); }
+            finally { _topBusy = false; }
+        });
+    }
+
+    static string Pretty(string name, string? path)
+    {
+        try
+        {
+            if (path != null)
+            {
+                var d = System.Diagnostics.FileVersionInfo.GetVersionInfo(path).FileDescription;
+                if (!string.IsNullOrWhiteSpace(d) && d.Length <= 28) return d.Trim();
+            }
+        }
+        catch { }
+        return name;
+    }
+
+    [DllImport("kernel32.dll")] static extern IntPtr OpenProcess(uint access, bool inherit, int pid);
+    [DllImport("kernel32.dll")] static extern bool CloseHandle(IntPtr h);
+    [DllImport("kernel32.dll", CharSet = CharSet.Unicode)] static extern unsafe bool QueryFullProcessImageNameW(IntPtr h, int flags, char* buf, ref int size);
+
+    static unsafe string? ImagePath(int pid)
+    {
+        var h = OpenProcess(0x1000, false, pid); // PROCESS_QUERY_LIMITED_INFORMATION
+        if (h == IntPtr.Zero) return null;
+        try
+        {
+            char* buf = stackalloc char[520]; int n = 520;
+            return QueryFullProcessImageNameW(h, 0, buf, ref n) ? new string(buf, 0, n) : null;
+        }
+        finally { CloseHandle(h); }
+    }
+
+    // ---------- internet hız testi (kullanıcı başlatır) ----------
+    public double SpeedDown = -1, SpeedUp = -1;
+    public bool SpeedTesting;
+    public string SpeedStatus = "";
+
+    public void RunSpeedTest()
+    {
+        if (SpeedTesting) return;
+        SpeedTesting = true; SpeedDown = SpeedUp = -1; SpeedStatus = "İndirme test ediliyor…";
+        Task.Run(async () =>
+        {
+            try
+            {
+                using var http = new System.Net.Http.HttpClient { Timeout = TimeSpan.FromSeconds(20) };
+                var sw = System.Diagnostics.Stopwatch.StartNew();
+                using (var resp = await http.GetAsync("https://speed.cloudflare.com/__down?bytes=25000000", System.Net.Http.HttpCompletionOption.ResponseHeadersRead))
+                await using (var s = await resp.Content.ReadAsStreamAsync())
+                {
+                    var buf = new byte[64 * 1024]; long total = 0; int n;
+                    while ((n = await s.ReadAsync(buf)) > 0)
+                    {
+                        total += n;
+                        double mbps = total * 8 / 1e6 / Math.Max(0.05, sw.Elapsed.TotalSeconds);
+                        Dispatcher.Post(() => SpeedDown = mbps);
+                    }
+                }
+                Dispatcher.Post(() => SpeedStatus = "Yükleme test ediliyor…");
+                var payload = new byte[8_000_000];
+                sw.Restart();
+                using (await http.PostAsync("https://speed.cloudflare.com/__up", new System.Net.Http.ByteArrayContent(payload))) { }
+                double up = payload.Length * 8 / 1e6 / sw.Elapsed.TotalSeconds;
+                Dispatcher.Post(() => { SpeedUp = up; SpeedStatus = "Tamamlandı"; });
+            }
+            catch (Exception e) { Log.Error("SpeedTest", e); Dispatcher.Post(() => SpeedStatus = "Bağlantı hatası"); }
+            finally { Dispatcher.Post(() => SpeedTesting = false); }
+        });
+    }
+
     long _battStamp;
     /// <summary>Kapalı haptaki pil göstergesi için (en fazla 5 sn'de bir).</summary>
     public void SampleBatteryOnly()

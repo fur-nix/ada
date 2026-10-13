@@ -62,6 +62,13 @@ public struct OPENFILENAME
 }
 
 [StructLayout(LayoutKind.Sequential)]
+public struct PROCESS_MEMORY_COUNTERS
+{
+    public uint cb, PageFaultCount; public nuint PeakWorkingSetSize, WorkingSetSize, QuotaPeakPagedPoolUsage, QuotaPagedPoolUsage,
+        QuotaPeakNonPagedPoolUsage, QuotaNonPagedPoolUsage, PagefileUsage, PeakPagefileUsage;
+}
+
+[StructLayout(LayoutKind.Sequential)]
 public struct PHYSICAL_MONITOR { public IntPtr hPhysicalMonitor; public unsafe fixed char szPhysicalMonitorDescription[128]; }
 
 public static unsafe class Win32
@@ -143,6 +150,18 @@ public static unsafe class Win32
     [DllImport("user32.dll", CharSet = CharSet.Unicode)]
     public static extern IntPtr SendMessageTimeoutW(IntPtr h, uint msg, IntPtr w, string l, uint flags, uint timeout, out IntPtr result);
     [DllImport("user32.dll")] public static extern uint GetDpiForWindow(IntPtr h);
+    [DllImport("user32.dll")] public static extern bool UnregisterHotKey(IntPtr h, int id);
+    [DllImport("user32.dll")] public static extern bool AllowSetForegroundWindow(int pid);
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)] public static extern IntPtr FindWindowW(string? cls, string? name);
+    [DllImport("user32.dll")] public static extern bool DestroyWindow(IntPtr h);
+    [DllImport("user32.dll")] public static extern bool IsWindowVisible(IntPtr h);
+    [DllImport("user32.dll")] public static extern bool IsIconic(IntPtr h);
+    [DllImport("user32.dll")] public static extern IntPtr SendMessageW(IntPtr h, uint m, IntPtr w, IntPtr l);
+    [DllImport("user32.dll")] public static extern bool ScreenToClient(IntPtr h, ref POINT p);
+    [DllImport("user32.dll")]
+    public static extern bool UpdateLayeredWindow(IntPtr h, IntPtr hdcDst, IntPtr dst, ref SIZE size, IntPtr hdcSrc, ref POINT src, uint key, ref BLENDFUNCTION blend, uint flags);
+    [DllImport("shell32.dll", CharSet = CharSet.Unicode)] public static extern uint ExtractIconExW(string file, int index, out IntPtr large, out IntPtr small, uint n);
+    [DllImport("kernel32.dll")] public static extern bool K32GetProcessMemoryInfo(IntPtr proc, out PROCESS_MEMORY_COUNTERS c, int size);
     [DllImport("user32.dll")] public static extern bool DestroyIcon(IntPtr h);
 
     [DllImport("gdi32.dll")] public static extern IntPtr CreateCompatibleDC(IntPtr dc);

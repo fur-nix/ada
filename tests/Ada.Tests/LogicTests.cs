@@ -131,6 +131,50 @@ public class StoreTests
     }
 
     [Fact]
+    public void NormalizeRepairsTabsAndRanges()
+    {
+        var s = new State { Version = 2, TabOrder = new() { 3, 3, 9, 1 }, HiddenTabs = new() { 0, 1, 2, 3, 4, 5, 6 }, Size = 7, Roundness = 0, Hotkey = -2 };
+        s.Normalize();
+        Assert.Equal(new[] { 3, 1, 0, 2, 4, 5, 6 }, s.TabOrder);
+        Assert.Empty(s.HiddenTabs);           // hepsi gizlenemez
+        Assert.Equal(2, s.Size);
+        Assert.Equal(0.4f, s.Roundness);
+        Assert.Equal(0, s.Hotkey);
+    }
+
+    [Fact]
+    public void VisibleTabsFollowOrderAndHidden()
+    {
+        var s = new State { TabOrder = new() { 5, 0, 1, 2, 3, 4 }, HiddenTabs = new() { 1, 3 } };
+        Assert.Equal(new[] { 5, 0, 2, 4 }, s.VisibleTabs());
+    }
+
+    [Fact]
+    public void ResetSettingsKeepsUserData()
+    {
+        var s = new State { Notch = false, Size = 2, OpenOnHover = true };
+        s.Todos.Add(new TodoItem { Text = "kalsın" });
+        s.ResetSettings();
+        Assert.True(s.Notch); Assert.Equal(1, s.Size); Assert.False(s.OpenOnHover);
+        Assert.Single(s.Todos);
+    }
+
+    [Fact]
+    public void OldFileWithoutNewSettingsGetsDefaults()
+    {
+        var path = Path.Combine(Path.GetTempPath(), "ada-old-" + Guid.NewGuid() + ".json");
+        File.WriteAllText(path, "{\"Todos\":[{\"Text\":\"eski\"}],\"Apps\":[],\"Notch\":false,\"TabOrder\":[5,4,3,2,1,0]}");
+        var s = Store.Load(path);
+        // v1 dosyası Hitodama düzenine taşınır, kullanıcı verisi korunur
+        Assert.True(s.Notch);
+        Assert.Equal(2, s.Version);
+        Assert.Equal("eski", s.Todos[0].Text);
+        Assert.Equal(Slot.Clock, s.IdleCenter);
+        Assert.Equal(new[] { 0, 1, 2, 3, 4, 5, 6 }, s.TabOrder);
+        File.Delete(path);
+    }
+
+    [Fact]
     public void CorruptFileFallsBackToDefaults()
     {
         var path = Path.Combine(Path.GetTempPath(), "ada-bad-" + Guid.NewGuid() + ".json");

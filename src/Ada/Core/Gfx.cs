@@ -111,6 +111,15 @@ public sealed class Gfx : IDisposable
         Win32.UpdateLayeredWindow(hwnd, IntPtr.Zero, ref dst, ref size, _memDc, ref src, 0, ref blend, Win32.ULW_ALPHA);
     }
 
+    /// <summary>Pencereyi taşımadan içeriği günceller (kullanıcı sürüklerken konum sistemde kalır).</summary>
+    public void PresentInPlace(IntPtr hwnd, int pw, int ph)
+    {
+        var size = new SIZE(pw, ph);
+        var src = new POINT(0, 0);
+        var blend = new BLENDFUNCTION { BlendOp = 0, SourceConstantAlpha = 255, AlphaFormat = 1 };
+        Win32.UpdateLayeredWindow(hwnd, IntPtr.Zero, IntPtr.Zero, ref size, _memDc, ref src, 0, ref blend, Win32.ULW_ALPHA);
+    }
+
     // ---------- transform ----------
     public void PushTranslate(float x, float y, float scale = 1f, Vector2 origin = default)
     {
@@ -189,6 +198,22 @@ public sealed class Gfx : IDisposable
             s.Close();
         }
         _rt.FillGeometry(geo, B(c));
+    }
+
+    /// <summary>Dalgalı çizgi (Android 13 tarzı müzik ilerlemesi).</summary>
+    public void Wave(float x0, float x1, float y, float amp, float wavelength, float phase, Color4 c, float width)
+    {
+        if (x1 - x0 < 2) return;
+        using var geo = D2.CreatePathGeometry();
+        using (var s = geo.Open())
+        {
+            s.BeginFigure(new Vector2(x0, y + amp * MathF.Sin(phase)), FigureBegin.Hollow);
+            for (float x = x0 + 2; x <= x1; x += 2)
+                s.AddLine(new Vector2(x, y + amp * MathF.Sin(phase + (x - x0) / wavelength * MathF.Tau)));
+            s.EndFigure(FigureEnd.Open);
+            s.Close();
+        }
+        _rt.DrawGeometry(geo, B(c), width, _roundCap);
     }
 
     /// <summary>Çizgi grafik + altında gradyan dolgu.</summary>
@@ -297,6 +322,24 @@ public sealed class Gfx : IDisposable
         _rt.FillRoundedRectangle(new RoundedRectangle(RF(dest), rad, rad), brush);
     }
 
+    /// <summary>Görüntüyü oranını bozmadan alanı dolduracak şekilde kırpar (CSS object-fit: cover).</summary>
+    public void BitmapCover(ID2D1Bitmap bmp, Rect dest, float rad, float opacity = 1f)
+    {
+        var sz = bmp.Size;
+        float k = MathF.Max(dest.Width / sz.Width, dest.Height / sz.Height);
+        float ox = dest.X + (dest.Width - sz.Width * k) / 2, oy = dest.Y + (dest.Height - sz.Height * k) / 2;
+        using var brush = _rt.CreateBitmapBrush(bmp, new BitmapBrushProperties
+        {
+            ExtendModeX = ExtendMode.Clamp, ExtendModeY = ExtendMode.Clamp,
+            InterpolationMode = Vortice.Direct2D1.BitmapInterpolationMode.Linear
+        }, new BrushProperties { Opacity = opacity * Alpha, Transform = Matrix3x2.Identity });
+        brush.Transform = Matrix3x2.CreateScale(k) * Matrix3x2.CreateTranslation(ox, oy);
+        rad = MathF.Min(rad, MathF.Min(dest.Width, dest.Height) / 2);
+        _rt.FillRoundedRectangle(new RoundedRectangle(RF(dest), rad, rad), brush);
+    }
+
+    public void PushMatrix(Matrix3x2 m) { _xf.Push(_rt.Transform); _rt.Transform = m * _rt.Transform; }
+
     /// <summary>Kodlanmış görüntüyü (png/jpg) çözer, max boyuta küçültür, baskın rengi hesaplar.</summary>
     public ID2D1Bitmap? LoadImage(byte[] data, int maxPx, out Color4 dominant)
     {
@@ -401,7 +444,9 @@ public sealed class Gfx : IDisposable
     }
 
     /// <summary>Son çizilen kareyi PNG olarak kaydeder (--snap test modu).</summary>
-    public unsafe void SavePng(string path, int w, int h)
+    public void SavePng(string path, int w, int h) => Png.Write(path, w, h, ReadRgba(w, h));
+
+    public unsafe byte[] ReadRgba(int w, int h)
     {
         var rgba = new byte[w * h * 4];
         byte* src = (byte*)_bits;
@@ -416,7 +461,7 @@ public sealed class Gfx : IDisposable
             rgba[o + 2] = (byte)Math.Min(255, p[0] * 255 / a);
             rgba[o + 3] = (byte)a;
         }
-        Png.Write(path, w, h, rgba);
+        return rgba;
     }
 
     public void Dispose()

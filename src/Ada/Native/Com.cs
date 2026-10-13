@@ -43,6 +43,38 @@ internal partial interface IShellItemImageFactory
     [PreserveSig] int GetImage(NativeSize size, int flags, out IntPtr hbitmap);
 }
 
+[GeneratedComInterface(StringMarshalling = StringMarshalling.Utf16), Guid("000214F9-0000-0000-C000-000000000046")]
+internal partial interface IShellLinkW
+{
+    [PreserveSig] int GetPath(IntPtr file, int max, IntPtr fd, int flags);
+    [PreserveSig] int GetIDList(out IntPtr pidl);
+    [PreserveSig] int SetIDList(IntPtr pidl);
+    [PreserveSig] int GetDescription(IntPtr name, int max);
+    [PreserveSig] int SetDescription(string name);
+    [PreserveSig] int GetWorkingDirectory(IntPtr dir, int max);
+    [PreserveSig] int SetWorkingDirectory(string dir);
+    [PreserveSig] int GetArguments(IntPtr args, int max);
+    [PreserveSig] int SetArguments(string args);
+    [PreserveSig] int GetHotkey(out short key);
+    [PreserveSig] int SetHotkey(short key);
+    [PreserveSig] int GetShowCmd(out int cmd);
+    [PreserveSig] int SetShowCmd(int cmd);
+    [PreserveSig] int GetIconLocation(IntPtr path, int max, out int index);
+    [PreserveSig] int SetIconLocation(string path, int index);
+    [PreserveSig] int SetRelativePath(string path, int reserved);
+    [PreserveSig] int Resolve(IntPtr hwnd, int flags);
+    [PreserveSig] int SetPath(string file);
+}
+
+[GeneratedComInterface(StringMarshalling = StringMarshalling.Utf16), Guid("0000010b-0000-0000-C000-000000000046")]
+internal partial interface IPersistFile
+{
+    [PreserveSig] int GetClassID(out Guid clsid);
+    [PreserveSig] int IsDirty();
+    [PreserveSig] int Load(string file, int mode);
+    [PreserveSig] int Save(string file, int remember);
+}
+
 internal static class ComUtil
 {
     public static readonly StrategyBasedComWrappers Wrappers = new();

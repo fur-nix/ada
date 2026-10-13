@@ -2,7 +2,7 @@ using System.IO.Compression;
 
 namespace Ada.Core;
 
-/// <summary>Bağımlılıksız minik PNG yazıcı (RGBA8).</summary>
+/// <summary>Bağımlılıksız minik PNG / ICO yazıcı (RGBA8).</summary>
 public static class Png
 {
     static readonly uint[] Crc = MakeTable();
@@ -19,16 +19,18 @@ public static class Png
         return t;
     }
 
-    public static void Write(string path, int w, int h, byte[] rgba)
+    public static void Write(string path, int w, int h, byte[] rgba) => File.WriteAllBytes(path, Encode(w, h, rgba));
+
+    public static byte[] Encode(int w, int h, byte[] rgba)
     {
-        using var fs = File.Create(path);
+        using var fs = new MemoryStream();
         fs.Write(new byte[] { 137, 80, 78, 71, 13, 10, 26, 10 });
         var ihdr = new byte[13];
         Be(ihdr, 0, (uint)w); Be(ihdr, 4, (uint)h);
         ihdr[8] = 8; ihdr[9] = 6; // 8 bit, RGBA
         Chunk(fs, "IHDR", ihdr);
         using var raw = new MemoryStream();
-        using (var z = new ZLibStream(raw, CompressionLevel.Fastest, true))
+        using (var z = new ZLibStream(raw, CompressionLevel.Optimal, true))
         {
             for (int y = 0; y < h; y++)
             {
@@ -38,6 +40,29 @@ public static class Png
         }
         Chunk(fs, "IDAT", raw.ToArray());
         Chunk(fs, "IEND", Array.Empty<byte>());
+        return fs.ToArray();
+    }
+
+    /// <summary>PNG gömülü .ico (Vista+).</summary>
+    public static void WriteIco(string path, IReadOnlyList<(int size, byte[] png)> images)
+    {
+        using var fs = File.Create(path);
+        var head = new byte[6 + 16 * images.Count];
+        head[2] = 1; head[4] = (byte)images.Count;
+        int offset = head.Length;
+        for (int i = 0; i < images.Count; i++)
+        {
+            var (size, png) = images[i];
+            int o = 6 + i * 16;
+            head[o] = (byte)(size >= 256 ? 0 : size);
+            head[o + 1] = (byte)(size >= 256 ? 0 : size);
+            head[o + 4] = 1; head[o + 6] = 32;
+            Le(head, o + 8, (uint)png.Length);
+            Le(head, o + 12, (uint)offset);
+            offset += png.Length;
+        }
+        fs.Write(head);
+        foreach (var (_, png) in images) fs.Write(png);
     }
 
     static void Chunk(Stream s, string type, byte[] data)
@@ -54,4 +79,5 @@ public static class Png
     }
 
     static void Be(byte[] b, int o, uint v) { b[o] = (byte)(v >> 24); b[o + 1] = (byte)(v >> 16); b[o + 2] = (byte)(v >> 8); b[o + 3] = (byte)v; }
+    static void Le(byte[] b, int o, uint v) { b[o] = (byte)v; b[o + 1] = (byte)(v >> 8); b[o + 2] = (byte)(v >> 16); b[o + 3] = (byte)(v >> 24); }
 }

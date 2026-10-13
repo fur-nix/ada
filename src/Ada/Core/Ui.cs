@@ -123,6 +123,97 @@ public sealed class Ui
         return clicked;
     }
 
+    /// <summary>iOS tarzı açma/kapama anahtarı; tıklanınca true döner.</summary>
+    public bool Toggle(int id, Rect r, bool on)
+    {
+        bool clicked = Click(id, r);
+        float k = Anim(id, on ? 1 : 0, 16);
+        float h = Anim(id + 1, Hit(r) ? 1 : 0);
+        var track = new Rect(r.Right - 46, r.CenterY - 14, 46, 28);
+        G.FillRound(track, 14, Theme.Mix(Theme.Rgb(0xFFFFFF, 0.14f + 0.04f * h), Theme.Accent, k));
+        float kx = track.X + 14 + 18 * k;
+        G.FillCircle(new Vector2(kx, track.CenterY + 1), 11.5f, new Color4(0, 0, 0, 0.25f));
+        G.FillCircle(new Vector2(kx, track.CenterY), 11, Theme.Text);
+        return clicked;
+    }
+
+    /// <summary>Kayan göstergeli segmentli seçim; seçilen indeksi döner.</summary>
+    public int Segmented(int id, Rect r, string[] items, int selected)
+    {
+        float w = r.Width / items.Length;
+        G.FillRound(r, r.Height / 2, Theme.Rgb(0xFFFFFF, 0.06f));
+        float ix = Anim(id, selected, 18);
+        var ind = new Rect(r.X + 3 + ix * w, r.Y + 3, w - 6, r.Height - 6);
+        G.FillRound(ind, ind.Height / 2, Theme.Rgb(0xFFFFFF, 0.16f));
+        G.StrokeRound(ind, ind.Height / 2, Theme.Rgb(0xFFFFFF, 0.08f), 1);
+        int result = selected;
+        for (int i = 0; i < items.Length; i++)
+        {
+            var cr = new Rect(r.X + i * w, r.Y, w, r.Height);
+            if (Click(id + 100 + i, cr)) result = i;
+            float hv = Anim(id + 200 + i, Hit(cr) ? 1 : 0);
+            var col = i == selected ? Theme.Text : Theme.Mix(Theme.Text2, Theme.Text, hv * 0.6f);
+            G.Text(items[i], cr, 12.5f, col, FontWeight.SemiBold, TextAlignment.Center);
+        }
+        return result;
+    }
+
+    /// <summary>Yan yana seçim çipleri (çok seçenekli tek seçim).</summary>
+    public int Chips(int id, Rect r, string[] items, int selected, Color4 accent)
+    {
+        float gap = 6, w = (r.Width - gap * (items.Length - 1)) / items.Length;
+        int result = selected;
+        for (int i = 0; i < items.Length; i++)
+        {
+            var cr = new Rect(r.X + i * (w + gap), r.Y, w, r.Height);
+            if (Click(id + i, cr)) result = i;
+            float hv = Anim(id + 50 + i, Hit(cr) ? 1 : 0);
+            float on = Anim(id + 100 + i, i == selected ? 1 : 0, 16);
+            G.FillRound(cr, 10, Theme.Rgb(0xFFFFFF, 0.05f + 0.04f * hv));
+            if (on > 0.01f)
+            {
+                G.FillRound(cr, 10, accent.WithA(0.22f * on));
+                G.StrokeRound(cr, 10, accent.WithA(0.7f * on), 1.2f);
+            }
+            G.Text(items[i], cr, 11.5f, Theme.Mix(Theme.Text2, Theme.Text, MathF.Max(on, hv * 0.5f)), FontWeight.SemiBold, TextAlignment.Center);
+        }
+        return result;
+    }
+
+    /// <summary>Renk örneği; tıklanınca true.</summary>
+    public bool Swatch(int id, Vector2 c, Color4 col, bool selected)
+    {
+        var r = new Rect(c.X - 16, c.Y - 16, 32, 32);
+        bool clicked = Click(id, r);
+        float hv = Anim(id, Hit(r) ? 1 : 0);
+        float s = Anim(id + 1, selected ? 1 : 0, 16);
+        if (s > 0.01f) G.StrokeCircle(c, 15.5f, col.WithA(s), 2);
+        G.FillCircle(c, 11 + hv * 1.5f - s * 1.5f, col);
+        return clicked;
+    }
+
+    /// <summary>Etiketsiz ince kaydırıcı; sürüklenince true.</summary>
+    public bool SliderPlain(int id, Rect r, ref float value, Color4 color)
+    {
+        bool h = Hit(r);
+        if (h) WantHand = true;
+        if (h && Pressed) ActiveId = id;
+        bool changed = false;
+        if (ActiveId == id && Down)
+        {
+            float v = Math.Clamp((Mouse.X - r.Left) / r.Width, 0, 1);
+            if (MathF.Abs(v - value) > 0.001f) { value = v; changed = true; }
+        }
+        float hv = Anim(id, h || ActiveId == id ? 1 : 0);
+        var track = new Rect(r.X, r.CenterY - 3, r.Width, 6);
+        G.FillRound(track, 3, Theme.Rgb(0xFFFFFF, 0.12f));
+        G.FillRound(new Rect(track.X, track.Y, MathF.Max(6, track.Width * value), 6), 3, color);
+        var k = new Vector2(r.X + r.Width * value, r.CenterY);
+        G.FillCircle(k, 10 + 1.5f * hv, new Color4(0, 0, 0, 0.3f));
+        G.FillCircle(k, 9 + 1.5f * hv, Theme.Text);
+        return changed;
+    }
+
     /// <summary>Küçük hap butonu (metin).</summary>
     public bool Pill(int id, Rect r, string text, Color4 bg, Color4 fg, string? glyph = null)
     {
