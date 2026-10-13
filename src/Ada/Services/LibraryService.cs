@@ -60,12 +60,119 @@ public sealed class AppIndex
 
     public static int Score(string name, string q, System.Globalization.CultureInfo tr)
     {
-        var cmp = tr.CompareInfo;
-        const System.Globalization.CompareOptions o = System.Globalization.CompareOptions.IgnoreCase | System.Globalization.CompareOptions.IgnoreNonSpace;
-        if (cmp.IsPrefix(name, q, o)) return 3;
-        foreach (var w in name.Split(' ', '-', '.', '_'))
-            if (w.Length > 0 && cmp.IsPrefix(w, q, o)) return 2;
-        return cmp.IndexOf(name, q, o) >= 0 ? 1 : 0;
+        // Türkçe karakterler katlanır (ö→o, ı→i, ç→c…): "gorev" → "Görev Yöneticisi" bulunur
+        var n = Fold(name); var f = Fold(q);
+        if (f.Length == 0) return 0;
+        if (n.StartsWith(f, StringComparison.Ordinal)) return 3;
+        int i = n.IndexOf(f, StringComparison.Ordinal);
+        if (i < 0) return 0;
+        // kelime başında mı?
+        for (; i >= 0; i = n.IndexOf(f, i + 1, StringComparison.Ordinal))
+            if (i == 0 || n[i - 1] is ' ' or '-' or '.' or '_' or '(') return 2;
+        return 1;
+    }
+
+    /// <summary>Küçük harf + aksansız (ı/İ → i).</summary>
+    public static string Fold(string s)
+    {
+        Span<char> buf = s.Length <= 256 ? stackalloc char[s.Length] : new char[s.Length];
+        int k = 0;
+        foreach (var ch in s)
+        {
+            char c = ch switch
+            {
+                'ı' or 'İ' or 'I' => 'i', 'ğ' or 'Ğ' => 'g', 'ü' or 'Ü' => 'u', 'ş' or 'Ş' => 's',
+                'ö' or 'Ö' => 'o', 'ç' or 'Ç' => 'c', 'â' or 'Â' => 'a', 'î' or 'Î' => 'i', 'û' or 'Û' => 'u',
+                _ => char.ToLowerInvariant(ch)
+            };
+            buf[k++] = c;
+        }
+        return new string(buf[..k]);
+    }
+}
+
+/// <summary>
+/// Spotlight dosya araması: kullanıcı klasörlerinin (Masaüstü, Belgeler, İndirilenler, Resimler, Müzik, Videolar) adları.
+/// İlk kullanımda arka planda taranır; 5 dk kullanılmazsa bellekten atılır.
+/// </summary>
+public sealed class FileIndex
+{
+    public sealed record Entry(string Name, string Path, string Folder);
+    public IReadOnlyList<Entry> All { get; private set; } = Array.Empty<Entry>();
+    public bool Loading { get; private set; }
+    DateTime _lastUse = DateTime.Now;
+    const int MaxFiles = 20000;
+    static readonly HashSet<string> SkipDirs = new(StringComparer.OrdinalIgnoreCase)
+    { "node_modules", ".git", "bin", "obj", ".vs", "__pycache__", ".venv", "venv", "AppData", "$RECYCLE.BIN", ".cache", "packages" };
+
+    public void EnsureLoaded()
+    {
+        _lastUse = DateTime.Now;
+        if (Loading || All.Count > 0) return;
+        Loading = true;
+        Task.Run(() =>
+        {
+            var list = new List<Entry>(4096);
+            var home = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
+            var roots = new[]
+            {
+                Environment.GetFolderPath(Environment.SpecialFolder.DesktopDirectory),
+                Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments),
+                Path.Combine(home, "Downloads"),
+                Environment.GetFolderPath(Environment.SpecialFolder.MyPictures),
+                Environment.GetFolderPath(Environment.SpecialFolder.MyMusic),
+                Environment.GetFolderPath(Environment.SpecialFolder.MyVideos),
+            };
+            foreach (var root in roots.Distinct()) Walk(root, 0, list);
+            Dispatcher.Post(() => { All = list; Loading = false; });
+        });
+    }
+
+    static void Walk(string dir, int depth, List<Entry> list)
+    {
+        if (list.Count >= MaxFiles || depth > 5 || !Directory.Exists(dir)) return;
+        var folder = System.IO.Path.GetFileName(dir);
+        try
+        {
+            foreach (var f in Directory.EnumerateFiles(dir))
+            {
+                var name = System.IO.Path.GetFileName(f);
+                if (name.StartsWith('.') || name.EndsWith(".tmp", StringComparison.OrdinalIgnoreCase) || name == "desktop.ini") continue;
+                list.Add(new Entry(name, f, folder));
+                if (list.Count >= MaxFiles) return;
+            }
+            foreach (var d in Directory.EnumerateDirectories(dir))
+            {
+                var n = System.IO.Path.GetFileName(d);
+                if (n.StartsWith('.') || SkipDirs.Contains(n)) continue;
+                var attr = File.GetAttributes(d);
+                if ((attr & (FileAttributes.Hidden | FileAttributes.System | FileAttributes.ReparsePoint)) != 0) continue;
+                list.Add(new Entry(n, d, folder));
+                Walk(d, depth + 1, list);
+            }
+        }
+        catch { }
+    }
+
+    public List<Entry> Search(string q, int max)
+    {
+        _lastUse = DateTime.Now;
+        q = q.Trim();
+        if (q.Length < 2) return new();
+        var tr = System.Globalization.CultureInfo.GetCultureInfo("tr-TR");
+        var best = new List<(Entry e, int s)>();
+        foreach (var e in All)
+        {
+            int s = AppIndex.Score(e.Name, q, tr);
+            if (s > 0) best.Add((e, s));
+        }
+        return best.OrderByDescending(x => x.s).ThenBy(x => x.e.Name.Length).Take(max).Select(x => x.e).ToList();
+    }
+
+    /// <summary>Uzun süre kullanılmadıysa dizini bırak (bellek).</summary>
+    public void Trim()
+    {
+        if (!Loading && All.Count > 0 && DateTime.Now - _lastUse > TimeSpan.FromMinutes(5)) All = Array.Empty<Entry>();
     }
 }
 
@@ -117,7 +224,7 @@ public sealed class WallpaperService
         if (_thumbs.TryGetValue(file, out var b)) return b;
         if (budget <= 0) { pending = true; return null; }
         budget--;
-        try { b = _g.LoadImage(File.ReadAllBytes(file), (int)(420 * _g.Scale), out _); }
+        try { b = _g.LoadImage(File.ReadAllBytes(file), (int)(300 * _g.Scale), out _); }
         catch { b = null; }
         _thumbs[file] = b;
         return b;

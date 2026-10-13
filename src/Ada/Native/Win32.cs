@@ -62,6 +62,9 @@ public struct OPENFILENAME
 }
 
 [StructLayout(LayoutKind.Sequential)]
+public struct APPBARDATA { public uint cbSize; public IntPtr hWnd; public uint uCallbackMessage; public uint uEdge; public RECT rc; public IntPtr lParam; }
+
+[StructLayout(LayoutKind.Sequential)]
 public struct PROCESS_MEMORY_COUNTERS
 {
     public uint cb, PageFaultCount; public nuint PeakWorkingSetSize, WorkingSetSize, QuotaPeakPagedPoolUsage, QuotaPagedPoolUsage,
@@ -161,6 +164,40 @@ public static unsafe class Win32
     [DllImport("user32.dll")]
     public static extern bool UpdateLayeredWindow(IntPtr h, IntPtr hdcDst, IntPtr dst, ref SIZE size, IntPtr hdcSrc, ref POINT src, uint key, ref BLENDFUNCTION blend, uint flags);
     [DllImport("shell32.dll", CharSet = CharSet.Unicode)] public static extern uint ExtractIconExW(string file, int index, out IntPtr large, out IntPtr small, uint n);
+    [DllImport("user32.dll")] public static extern bool EnumWindows(delegate* unmanaged<IntPtr, IntPtr, int> cb, IntPtr l);
+    [DllImport("user32.dll")] public static extern IntPtr GetWindow(IntPtr h, uint cmd);
+    [DllImport("user32.dll")] public static extern uint GetWindowThreadProcessId(IntPtr h, out int pid);
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)] public static extern int GetWindowTextW(IntPtr h, char* buf, int max);
+    [DllImport("user32.dll")] public static extern int GetWindowTextLengthW(IntPtr h);
+    [DllImport("user32.dll")] public static extern bool IsZoomed(IntPtr h);
+    [DllImport("dwmapi.dll")] public static extern int DwmGetWindowAttribute(IntPtr h, int attr, out int value, int size);
+    [DllImport("shell32.dll")] public static extern IntPtr SHAppBarMessage(uint msg, ref APPBARDATA data);
+    [DllImport("kernel32.dll")] public static extern IntPtr OpenProcess(uint access, bool inherit, int pid);
+    [DllImport("kernel32.dll")] public static extern bool CloseHandle(IntPtr h);
+    [DllImport("kernel32.dll", CharSet = CharSet.Unicode)] public static extern bool QueryFullProcessImageNameW(IntPtr h, int flags, char* buf, ref int size);
+
+    public static string WindowText(IntPtr h)
+    {
+        int n = GetWindowTextLengthW(h);
+        if (n <= 0) return "";
+        n = Math.Min(n, 255);
+        char* buf = stackalloc char[n + 1];
+        int got = GetWindowTextW(h, buf, n + 1);
+        return new string(buf, 0, got);
+    }
+
+    public static string? ProcessPath(int pid)
+    {
+        var h = OpenProcess(0x1000, false, pid); // PROCESS_QUERY_LIMITED_INFORMATION
+        if (h == IntPtr.Zero) return null;
+        try
+        {
+            char* buf = stackalloc char[520]; int n = 520;
+            return QueryFullProcessImageNameW(h, 0, buf, ref n) ? new string(buf, 0, n) : null;
+        }
+        finally { CloseHandle(h); }
+    }
+
     [DllImport("kernel32.dll")] public static extern bool K32GetProcessMemoryInfo(IntPtr proc, out PROCESS_MEMORY_COUNTERS c, int size);
     [DllImport("user32.dll")] public static extern bool DestroyIcon(IntPtr h);
 

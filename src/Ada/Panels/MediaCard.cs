@@ -77,5 +77,56 @@ public sealed class MediaCard
         G.Text(Fmt(dur), new Rect(x1 + 6, py - 8, 44, 16), 10, Theme.Text2, FontWeight.SemiBold);
     }
 
+    /// <summary>Denetim Merkezi "Şimdi Çalıyor" modülü (kompakt).</summary>
+    public void DrawCompact(Rect r)
+    {
+        var m = I.Media;
+        // albüm renginden çok hafif bir ışıma, üstünde cam
+        G.VGradientRound(r, 18, Theme.Mix(I.MediaColor, Theme.Island, m.HasSession ? 0.74f : 0.9f), Theme.Mix(Theme.Island, Theme.Rgb(0xFFFFFF), 0.05f));
+        G.StrokeRound(r, 18, Theme.Rgb(0xFFFFFF, 0.07f), 1);
+        if (!m.HasSession)
+        {
+            G.FillRound(new Rect(r.X + 14, r.Y + 14, 44, 44), 10, Theme.Rgb(0xFFFFFF, 0.08f));
+            G.Icon(Glyph.Music, new Vector2(r.X + 36, r.Y + 36), 15, Theme.Text3);
+            G.Text("Şimdi Çalıyor", new Rect(r.X + 70, r.Y + 16, r.Width - 80, 18), 13, Theme.Text, FontWeight.SemiBold);
+            G.Text("Bir şey çalmıyor", new Rect(r.X + 70, r.Y + 35, r.Width - 80, 16), 11, Theme.Text2, FontWeight.Normal, font: Theme.TextFont);
+            return;
+        }
+
+        var art = new Rect(r.X + 14, r.Y + 14, 44, 44);
+        if (_artFade < 1) { _artFade = MathF.Min(1, _artFade + U.Dt / 0.35f); U.NeedsFrame = true; }
+        if (_oldArt != null && _artFade < 1) G.BitmapRound(_oldArt, art, 10, 1 - _artFade);
+        if (I.MediaArt != null) { G.Shadow(art, 10, 6, 0.4f, 3); G.BitmapRound(I.MediaArt, art, 10, Ease.OutCubic(_artFade)); }
+        else { G.FillRound(art, 10, I.MediaColor.WithA(0.4f)); G.Icon(Glyph.Music, new Vector2(art.CenterX, art.CenterY), 15, Theme.Text); }
+        float tx = art.Right + 12, tw = r.Right - tx - 14;
+        G.Text(m.Title, new Rect(tx, art.Y + 2, tw, 20), 13.5f, Theme.Text, FontWeight.Bold);
+        G.Text(m.Artist.Length > 0 ? m.Artist : m.Source, new Rect(tx, art.Y + 23, tw, 18), 11.5f, Theme.Text2, FontWeight.Medium);
+
+        // ince dalgalı ilerleme
+        var pos = m.LivePosition; var dur = m.Duration;
+        float frac = dur.TotalSeconds > 0 ? (float)(pos.TotalSeconds / dur.TotalSeconds) : 0;
+        float py = art.Bottom + 14, x0 = r.X + 16, x1 = r.Right - 16;
+        var bar = new Rect(x0, py - 8, x1 - x0, 16);
+        int pid = Ui.Id("np.prog");
+        bool hov = U.Hit(bar) && dur.TotalSeconds > 0;
+        if (hov) U.WantHand = true;
+        if (hov && U.Pressed) U.ActiveId = pid;
+        if (U.ActiveId == pid && U.Down) frac = Ease.Clamp01((U.Mouse.X - x0) / (x1 - x0));
+        if (U.ActiveId == pid && U.Released) m.Seek(Ease.Clamp01((U.Mouse.X - x0) / (x1 - x0)));
+        float xp = x0 + (x1 - x0) * frac;
+        float amp = U.Anim(Ui.Id("np.amp"), m.Playing ? 2f : 0f, 6);
+        if (m.Playing) U.NeedsFrame = true;
+        G.Wave(x0, xp, py, amp, 11, -U.Time * 5f, Theme.Text, 2f);
+        G.Line(new Vector2(xp + 3, py), new Vector2(x1, py), Theme.Rgb(0xFFFFFF, 0.22f), 2f);
+
+        // kontroller
+        float cy = r.Bottom - 22, cx = r.CenterX;
+        if (U.IconButton(Ui.Id("np.prev"), new Vector2(cx - 46, cy), 14, Glyph.Prev, 12, Theme.Text)) m.Prev();
+        if (U.IconButton(Ui.Id("np.play"), new Vector2(cx, cy), 17, m.Playing ? Glyph.Pause : Glyph.Play, 14, Theme.Rgb(0x111111), true, Theme.Rgb(0xF5F5F7))) m.TogglePlay();
+        if (U.IconButton(Ui.Id("np.next"), new Vector2(cx + 46, cy), 14, Glyph.Next, 12, Theme.Text)) m.Next();
+        G.Text(Fmt(pos), new Rect(r.X + 16, cy - 8, 60, 16), 10, Theme.Text3, FontWeight.SemiBold);
+        G.Text("-" + Fmt(dur - pos), new Rect(r.Right - 76, cy - 8, 60, 16), 10, Theme.Text3, FontWeight.SemiBold, TextAlignment.Trailing);
+    }
+
     static string Fmt(TimeSpan t) => t.TotalHours >= 1 ? t.ToString(@"h\:mm\:ss") : t.ToString(@"m\:ss");
 }

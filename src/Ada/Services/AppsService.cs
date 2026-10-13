@@ -73,6 +73,8 @@ public sealed class AppsService
         return bmp;
     }
 
+    public int IconCount => _icons.Count;
+
     public void ClearIconCache() { foreach (var b in _icons.Values) b?.Dispose(); _icons.Clear(); }
 
     public static void Launch(PinnedApp app)

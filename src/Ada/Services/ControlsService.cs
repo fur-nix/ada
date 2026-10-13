@@ -84,16 +84,64 @@ public sealed class ControlsService
         _wmiBusy = true;
         Task.Run(async () =>
         {
-            // sürükleme boyunca biriken değerleri birleştir (powershell yavaş)
+            // sürükleme boyunca biriken değerleri birleştir; tek kalıcı yardımcı süreç → anında tepki
             while (_pendingBrightness >= 0)
             {
                 var v = (int)MathF.Round(_pendingBrightness * 100);
                 _pendingBrightness = -1;
-                RunPs($"Invoke-CimMethod -Namespace root/WMI -ClassName WmiMonitorBrightnessMethods -MethodName WmiSetBrightness -Arguments @{{Timeout=0;Brightness={v}}} | Out-Null");
-                await Task.Delay(50);
+                BrightnessHelper.Send(v);
+                await Task.Delay(30);
             }
             _wmiBusy = false;
         });
+    }
+
+    /// <summary>
+    /// Dizüstü ekran parlaklığı için arka planda tek bir gizli PowerShell: stdin'den yüzde okur, WMI ile uygular.
+    /// Her değişiklikte yeni süreç başlatmaktan (~400 ms) çok daha hızlı; 15 sn kullanılmazsa kapanır.
+    /// Not: WmiSetBrightness, Brightness'ı bayt ve Timeout'u uint32 bekler (düz sayı → "tür uyumsuzluğu").
+    /// </summary>
+    static class BrightnessHelper
+    {
+        static System.Diagnostics.Process? _p;
+        static Timer? _idle;
+        static readonly object Lock = new();
+        const string Script =
+            "$m = Get-CimInstance -Namespace root/WMI -ClassName WmiMonitorBrightnessMethods; " +
+            "while (($l = [Console]::In.ReadLine()) -ne $null) { if ($l -match '^\\d+$') { " +
+            "$m | Invoke-CimMethod -MethodName WmiSetBrightness -Arguments @{Timeout=[uint32]0;Brightness=[byte][int]$l} | Out-Null } }";
+
+        public static void Send(int percent)
+        {
+            lock (Lock)
+            {
+                try
+                {
+                    if (_p == null || _p.HasExited)
+                    {
+                        var psi = new ProcessStartInfo("powershell.exe",
+                            "-NoProfile -NonInteractive -WindowStyle Hidden -EncodedCommand " +
+                            Convert.ToBase64String(System.Text.Encoding.Unicode.GetBytes(Script)))
+                        { CreateNoWindow = true, UseShellExecute = false, RedirectStandardInput = true };
+                        _p = System.Diagnostics.Process.Start(psi);
+                    }
+                    _p!.StandardInput.WriteLine(Math.Clamp(percent, 0, 100));
+                    _p.StandardInput.Flush();
+                    _idle?.Dispose();
+                    _idle = new Timer(_ => Stop(), null, 15000, Timeout.Infinite);
+                }
+                catch (Exception e) { Log.Error("Brightness", e); _p = null; }
+            }
+        }
+
+        static void Stop()
+        {
+            lock (Lock)
+            {
+                try { _p?.StandardInput.Close(); _p?.WaitForExit(1500); if (_p is { HasExited: false }) _p.Kill(); } catch { }
+                _p?.Dispose(); _p = null;
+            }
+        }
     }
 
     static unsafe bool TryDdc(IntPtr monitor, float? set, out float value)

@@ -13,6 +13,7 @@ public static class Program
         AppDomain.CurrentDomain.UnhandledException += (_, e) =>
         {
             if (e.ExceptionObject is Exception ex) Log.Error("unhandled", ex);
+            try { Taskbar.SetHidden(false); } catch { } // çökse bile görev çubuğu geri gelsin
         };
         TaskScheduler.UnobservedTaskException += (_, e) => { Log.Error("task", e.Exception); e.SetObserved(); };
 
@@ -55,8 +56,8 @@ public static class Program
         var island = new Island();
         island.Create();
         if (openSettings) island.OpenSettings();
-        island.Run();
-        Store.Save();
+        try { island.Run(); }
+        finally { island.Shutdown(); Store.Save(); }
         return 0;
     }
 }

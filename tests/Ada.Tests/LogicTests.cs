@@ -58,6 +58,51 @@ public class ReminderParserTests
     }
 }
 
+public class CalcTests
+{
+    [Theory]
+    [InlineData("2+3*4", 14)]
+    [InlineData("(2+3)*4", 20)]
+    [InlineData("2^3^2", 512)]
+    [InlineData("-5+2", -3)]
+    [InlineData("10/4", 2.5)]
+    [InlineData("3,5 x 2", 7)]
+    [InlineData("17 % 5", 2)]
+    public void Evaluates(string input, double expected)
+    {
+        Assert.True(Calc.TryEval(input, out var v));
+        Assert.Equal(expected, v, 9);
+    }
+
+    [Theory]
+    [InlineData("chrome")]
+    [InlineData("42")]
+    [InlineData("2+")]
+    [InlineData("(1+2")]
+    [InlineData("1/0")]
+    public void RejectsNonMath(string input) => Assert.False(Calc.TryEval(input, out _));
+
+    [Fact]
+    public void FormatsTurkish() => Assert.Equal("1.234,5", Calc.Format(1234.5));
+}
+
+public class SearchScoreTests
+{
+    static readonly System.Globalization.CultureInfo Tr = System.Globalization.CultureInfo.GetCultureInfo("tr-TR");
+
+    [Fact]
+    public void PrefixBeatsWordBeatsContains()
+    {
+        Assert.Equal(3, Ada.Services.AppIndex.Score("Visual Studio Code", "vis", Tr));
+        Assert.Equal(2, Ada.Services.AppIndex.Score("Visual Studio Code", "cod", Tr));
+        Assert.Equal(1, Ada.Services.AppIndex.Score("Visual Studio Code", "udi", Tr));
+        Assert.Equal(0, Ada.Services.AppIndex.Score("Visual Studio Code", "xyz", Tr));
+    }
+
+    [Fact]
+    public void IgnoresCaseAndTurkishAccents() => Assert.True(Ada.Services.AppIndex.Score("Görev Yöneticisi", "gorev", Tr) > 0);
+}
+
 public class ClipboardHistoryTests
 {
     [Fact]

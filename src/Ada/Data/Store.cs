@@ -63,6 +63,24 @@ public sealed class State
     public bool NotifyReminder { get; set; } = true;
     public bool ReminderSound { get; set; } = true;
 
+    // ---- Dock (macOS tarzı alt çubuk) ----
+    public bool DockEnabled { get; set; } = true;
+    /// <summary>0 küçük, 1 orta, 2 büyük.</summary>
+    public int DockSize { get; set; } = 1;
+    public bool DockMagnify { get; set; } = true;
+    public bool DockAutoHide { get; set; }
+    /// <summary>Büyütülmüş pencereler Dock'un altına girmesin (AppBar ile yer ayırır).</summary>
+    public bool DockReserve { get; set; } = true;
+    /// <summary>Windows görev çubuğunu tamamen gizle (Ada kapanınca geri gelir).</summary>
+    public bool HideTaskbar { get; set; }
+    public bool DockShowRunning { get; set; } = true;
+
+    // ---- Spotlight arama ----
+    /// <summary>0 Ctrl+Space, 1 Alt+Space, 2 kapalı.</summary>
+    public int SearchHotkey { get; set; }
+    public bool SearchFiles { get; set; } = true;
+    public bool SearchWeb { get; set; } = true;
+
     // ---- Sekmeler & genel ----
     public List<int> TabOrder { get; set; } = new() { 0, 1, 2, 3, 4, 5, 6 };
     public List<int> HiddenTabs { get; set; } = new();
@@ -85,6 +103,8 @@ public sealed class State
         Hotkey = Math.Clamp(Hotkey, 0, 3);
         Visibility = Math.Clamp(Visibility, 0, 2);
         AnimSpeed = Math.Clamp(AnimSpeed, 0, 2);
+        DockSize = Math.Clamp(DockSize, 0, 2);
+        SearchHotkey = Math.Clamp(SearchHotkey, 0, 2);
         var order = TabOrder.Where(t => t is >= 0 and < TabCount).Distinct().ToList();
         for (int i = 0; i < TabCount; i++) if (!order.Contains(i)) order.Add(i);
         TabOrder = order;
@@ -102,6 +122,9 @@ public sealed class State
         Notch = d.Notch; Size = d.Size; Roundness = d.Roundness; Accent = d.Accent;
         IdleLeft = d.IdleLeft; IdleCenter = d.IdleCenter; IdleRight = d.IdleRight; MediaInIdle = d.MediaInIdle;
         Visibility = d.Visibility; AnimSpeed = d.AnimSpeed; Shadow = d.Shadow;
+        DockEnabled = d.DockEnabled; DockSize = d.DockSize; DockMagnify = d.DockMagnify; DockAutoHide = d.DockAutoHide;
+        DockReserve = d.DockReserve; HideTaskbar = d.HideTaskbar; DockShowRunning = d.DockShowRunning;
+        SearchHotkey = d.SearchHotkey; SearchFiles = d.SearchFiles; SearchWeb = d.SearchWeb;
         OpenOnHover = d.OpenOnHover; CollapseDelayMs = d.CollapseDelayMs; HideOnFullscreen = d.HideOnFullscreen;
         NotifyClipboard = d.NotifyClipboard; NotifyTrack = d.NotifyTrack; NotifyReminder = d.NotifyReminder; ReminderSound = d.ReminderSound;
         TabOrder = d.TabOrder; HiddenTabs = d.HiddenTabs; Hotkey = d.Hotkey;

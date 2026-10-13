@@ -15,7 +15,7 @@ namespace Ada;
 /// "Ada Ayarları" penceresi: adayla aynı çizim katmanını (Gfx) paylaşır, ayrı bir uygulama kadar RAM yemez.
 /// Başlat menüsündeki "Ada Ayarları" kısayolu, adadaki dişli ve sağ tık menüsü bunu açar.
 /// </summary>
-public sealed unsafe class SettingsWindow
+public sealed unsafe class SettingsWindow : ISurface
 {
     const float W = 880, H = 600, M = 26, SideW = 214, R = 22;
     static bool _registered;
@@ -23,7 +23,7 @@ public sealed unsafe class SettingsWindow
     readonly Island I;
     Gfx G => I.G;
     readonly Ui U;
-    public IntPtr Hwnd;
+    public IntPtr Hwnd { get; private set; }
     bool _dirty = true;
     public bool Animating { get; private set; }
     readonly Stopwatch _sw = Stopwatch.StartNew();
@@ -34,13 +34,16 @@ public sealed unsafe class SettingsWindow
     bool _confirmReset;
     DateTime _confirmUntil;
 
-    static readonly string[] Pages = { "Görünüm", "Boşta", "Davranış", "Sekmeler", "Genel", "Hakkında" };
-    static readonly string[] PageGlyphs = { Glyph.Theme, Glyph.Clock, Glyph.Sliders, Glyph.Apps, Glyph.Settings, "" };
+    static readonly string[] Pages = { "Görünüm", "Boşta", "Davranış", "Dock", "Arama", "Sekmeler", "Genel", "Hakkında" };
+    public const int DockPage = 3;
+    static readonly string[] PageGlyphs = { Glyph.Theme, Glyph.Clock, Glyph.Sliders, "", "", Glyph.Apps, Glyph.Settings, "" };
     static readonly string[] PageSubs =
     {
         "Adanın şekli, boyutu ve rengi",
         "Kapalıyken solda, ortada ve sağda ne görünsün",
         "Açılma, kapanma ve bildirimler",
+        "MacBook tarzı alt çubuk ve Windows görev çubuğu",
+        "Spotlight: uygulama, dosya, hesap makinesi, web",
         "Hangi sekmeler görünsün, hangi sırayla",
         "Kısayol tuşu, başlangıç ve veriler",
         "Sürüm, kaynak kullanımı ve yol haritası"
@@ -145,6 +148,8 @@ public sealed unsafe class SettingsWindow
         return Win32.DefWindowProcW(h, m, w, l);
     }
 
+    public void GoTo(int page) { _page = Math.Clamp(page, 0, Pages.Length - 1); _prevPage = -1; _pageT = 1; _dirty = true; }
+
     void Go(int page)
     {
         if (page == _page) return;
@@ -242,9 +247,11 @@ public sealed unsafe class SettingsWindow
             case 0: PageLook(body); break;
             case 1: PageIdle(body); break;
             case 2: PageBehavior(body); break;
-            case 3: PageTabs(body); break;
-            case 4: PageGeneral(body); break;
-            case 5: PageAbout(body); break;
+            case 3: PageDock(body); break;
+            case 4: PageSearch(body); break;
+            case 5: PageTabs(body); break;
+            case 6: PageGeneral(body); break;
+            case 7: PageAbout(body); break;
         }
     }
 
@@ -380,6 +387,47 @@ public sealed unsafe class SettingsWindow
         if (U.Toggle(Ui.Id("s.n4"), c, st.ReminderSound)) { st.ReminderSound = !st.ReminderSound; Changed(); }
     }
 
+    void PageDock(Rect b)
+    {
+        var st = Store.Current;
+        float y = b.Y;
+        var c = Row(ref y, b, "Dock'u göster", "Ekranın altında MacBook tarzı uygulama çubuğu", 54);
+        if (U.Toggle(Ui.Id("d.on"), c, st.DockEnabled)) { st.DockEnabled = !st.DockEnabled; Changed(); }
+        c = Row(ref y, b, "Windows görev çubuğunu gizle", "Tamamen kaldırır; Ada kapanınca ya da bu kapatılınca geri gelir", 54);
+        if (U.Toggle(Ui.Id("d.tb"), c, st.HideTaskbar)) { st.HideTaskbar = !st.HideTaskbar; Changed(); }
+        c = Row(ref y, b, "Boyut", "Dock simgelerinin büyüklüğü", 54);
+        int v = U.Segmented(Ui.Id("d.size"), c, new[] { "Küçük", "Orta", "Büyük" }, st.DockSize);
+        if (v != st.DockSize) { st.DockSize = v; Changed(); }
+        c = Row(ref y, b, "Büyütme", "Üzerine gelince simgeler macOS gibi büyür", 54);
+        if (U.Toggle(Ui.Id("d.mag"), c, st.DockMagnify)) { st.DockMagnify = !st.DockMagnify; Changed(); }
+        c = Row(ref y, b, "Otomatik gizle", "Fare ekranın altına gelince belirir", 54);
+        if (U.Toggle(Ui.Id("d.auto"), c, st.DockAutoHide)) { st.DockAutoHide = !st.DockAutoHide; Changed(); }
+        c = Row(ref y, b, "Pencereler Dock'un üstünde dursun", "Büyütülmüş pencereler Dock'un arkasına girmez", 54);
+        if (U.Toggle(Ui.Id("d.res"), c, st.DockReserve)) { st.DockReserve = !st.DockReserve; Changed(); }
+        c = Row(ref y, b, "Açık uygulamaları göster", "Sabitlenmemiş açık uygulamalar ayraçtan sonra görünür", 54);
+        if (U.Toggle(Ui.Id("d.run"), c, st.DockShowRunning)) { st.DockShowRunning = !st.DockShowRunning; Changed(); }
+    }
+
+    void PageSearch(Rect b)
+    {
+        var st = Store.Current;
+        float y = b.Y;
+        var c = Row(ref y, b, "Kısayol", I.SearchHotkeyOk
+            ? (st.SearchHotkey == 0 ? "Ctrl+Space · not: VS Code'daki Ctrl+Space önerisini kullanamazsın" : "Spotlight'ı her yerden açar")
+            : "⚠ Bu kısayol başka bir uygulamada kullanımda", 64);
+        int v = U.Segmented(Ui.Id("q.hk"), c, new[] { "Ctrl+Space", "Alt+Space", "Kapalı" }, st.SearchHotkey);
+        if (v != st.SearchHotkey) { st.SearchHotkey = v; Changed(); }
+        c = Row(ref y, b, "Dosyaları ara", "Masaüstü, Belgeler, İndirilenler, Resimler, Müzik, Videolar", 58);
+        if (U.Toggle(Ui.Id("q.files"), c, st.SearchFiles)) { st.SearchFiles = !st.SearchFiles; Changed(); }
+        c = Row(ref y, b, "Web araması", "Son satırda “web'de ara” seçeneği", 58);
+        if (U.Toggle(Ui.Id("q.web"), c, st.SearchWeb)) { st.SearchWeb = !st.SearchWeb; Changed(); }
+        c = Row(ref y, b, "Şimdi dene", "Uygulama adı, dosya adı ya da 12*(3+4) gibi bir işlem yaz", 58);
+        if (U.Pill(Ui.Id("q.try"), new Rect(c.Right - 160, c.Y, 160, 32), "Spotlight'ı aç", Theme.Accent, Theme.TileOnText, ""))
+            Dispatcher.Post(I.ToggleSpotlight);
+        G.Text("Fn+Space kullanılamaz: Fn tuşu klavyenin kendi donanımında işlenir, Windows'a hiç ulaşmaz.",
+            new Rect(b.X, y + 14, b.Width, 16), 11, Theme.Text3, FontWeight.Normal, font: Theme.TextFont);
+    }
+
     void PageTabs(Rect b)
     {
         var st = Store.Current;
@@ -465,8 +513,8 @@ public sealed unsafe class SettingsWindow
         G.Text("YAKINDA", new Rect(b.X, y, 200, 16), 10, Theme.Text3, FontWeight.Bold);
         string[] road =
         {
-            "Görev çubuğunu tamamen gizleme (ada her şeyi üstlenir)",
-            "Win+Space / Fn+Space ile MacBook tarzı uygulama ve dosya araması",
+            "Dock'ta pencere önizlemeleri ve klasör yığınları",
+            "Üst menü çubuğu (macOS tarzı, uygulama menüleriyle)",
             "Hava durumu, pano görselleri, takvim senkronu",
             "NativeAOT derlemesi (daha da az RAM)"
         };

@@ -30,6 +30,8 @@ public sealed unsafe class Island
     public readonly Gfx G;
     public readonly Ui U;
     public readonly MediaService Media = new();
+    public readonly AppIndex AppIndex = new();
+    public readonly FileIndex Files = new();
     public readonly StatsService Stats = new();
     public readonly ControlsService Controls = new();
     public readonly AppsService Apps;
@@ -84,12 +86,22 @@ public sealed unsafe class Island
     bool _startupDone;
 
     const int T_TICK = 1, T_COLLAPSE = 2, T_EQ = 3, T_BLINK = 4, T_LIVE = 5, T_HOVER = 6, T_PROX = 8;
-    const int HOTKEY_ID = 7;
+    const int HOTKEY_ID = 7, SEARCH_HOTKEY_ID = 9;
     const uint WM_QUIT = 0x12, WM_SETCURSOR = 0x20;
     /// <summary>Başka bir Ada süreci (Başlat menüsü → "Ada Ayarları") bu mesajla ayarları açtırır.</summary>
     public const uint WM_OPEN_SETTINGS = Win32.WM_APP + 2;
 
     public SettingsWindow? Settings;
+    public SpotlightWindow? Spotlight;
+    public DockWindow? Dock;
+
+    bool SurfacesAnimating() => Settings?.Animating == true || Spotlight?.Animating == true || Dock?.Animating == true;
+    void FrameSurfaces() { Settings?.FrameIfNeeded(); Spotlight?.FrameIfNeeded(); Dock?.FrameIfNeeded(); }
+    void InvalidateSurfaces() { Settings?.Invalidate(); Spotlight?.Invalidate(); Dock?.Invalidate(); }
+    ISurface? SurfaceFor(IntPtr h) =>
+        Settings != null && h == Settings.Hwnd ? Settings :
+        Spotlight != null && h == Spotlight.Hwnd ? Spotlight :
+        Dock != null && h == Dock.Hwnd ? Dock : null;
     public IntPtr AppIconLarge, AppIconSmall;
 
     public Island()
@@ -163,6 +175,7 @@ public sealed unsafe class Island
     public static readonly string[] HotkeyNames = { "Ctrl+Alt+Space", "Ctrl+Shift+Space", "Alt+Shift+Space", "Kapalı" };
     public static readonly uint[] AccentPalette = { 0x8E9BFF, 0x7DB4FF, 0x5EEAD4, 0x4ADE80, 0xFBBF5B, 0xFF8A65, 0xF59AC9, 0xF5F5F7 };
     public bool HotkeyOk { get; private set; } = true;
+    public bool SearchHotkeyOk { get; private set; } = true;
 
     /// <summary>Ayarlar değişince çağrılır: tema, kısayol, yeniden çizim, kayıt.</summary>
     public void ApplySettings(bool save = false)
@@ -180,8 +193,20 @@ public sealed unsafe class Island
         if (!s.VisibleTabs().Contains(Tab)) Tab = s.VisibleTabs()[0];
         if (!SnapMode)
         {
-            if (s.Visibility == 0) { Win32.KillTimer(Hwnd, T_PROX); Reveal(); }
+            if (s.Visibility == 0) Reveal();
+            if (s.Visibility == 0 && !s.DockAutoHide) Win32.KillTimer(Hwnd, T_PROX);
             else Win32.SetTimer(Hwnd, T_PROX, 100, IntPtr.Zero);
+
+            // Spotlight kısayolu
+            Win32.UnregisterHotKey(Hwnd, SEARCH_HOTKEY_ID);
+            SearchHotkeyOk = true;
+            if (s.SearchHotkey < 2)
+                SearchHotkeyOk = Win32.RegisterHotKey(Hwnd, SEARCH_HOTKEY_ID, (s.SearchHotkey == 0 ? Win32.MOD_CONTROL : Win32.MOD_ALT) | Win32.MOD_NOREPEAT, 0x20);
+
+            // Dock
+            if (s.DockEnabled) { Dock ??= new DockWindow(this); Dock.ApplyLayoutSettings(); }
+            else if (Dock != null) { Dock.Shutdown(); Dock = null; Taskbar.SetHidden(false); }
+            if (!s.DockEnabled) Taskbar.SetHidden(false);
         }
         if (!s.HideOnFullscreen && _hidden) { _hidden = false; if (!_shown && !SnapMode) { Win32.ShowWindow(Hwnd, Win32.SW_SHOWNOACTIVATE); _shown = true; } }
         _indInit = false;
@@ -189,13 +214,33 @@ public sealed unsafe class Island
         if (save) Store.Save();
     }
 
-    public void OpenSettings()
+    public void OpenSettings() => OpenSettings(-1);
+
+    public void OpenSettings(int page)
     {
         if (SnapMode) return;
         Collapse();
         Settings ??= new SettingsWindow(this);
+        if (page >= 0) Settings.GoTo(page);
         Settings.Show();
         _animating = true;
+    }
+
+    public bool FullscreenHidden => _hidden;
+
+    public void ToggleSpotlight()
+    {
+        if (SnapMode) return;
+        Collapse();
+        Spotlight ??= new SpotlightWindow(this);
+        Spotlight.Toggle();
+    }
+
+    /// <summary>Çıkışta: Dock ekran alanını bırak, görev çubuğunu geri getir.</summary>
+    public void Shutdown()
+    {
+        Dock?.Shutdown(); Dock = null;
+        Taskbar.SetHidden(false);
     }
 
     public void SettingsClosed()
@@ -257,6 +302,17 @@ public sealed unsafe class Island
         Settings = sw;
         for (int p = 0; p < SettingsWindow.PageCount; p++) sw.SnapPage(p, Path.Combine(dir, $"6-ayarlar{p}.png"));
         Settings = null;
+
+        // Dock + Spotlight
+        Pump(2.0); // uygulama/dosya dizini taransın
+        var dock = new DockWindow(this);
+        dock.SnapRender(Path.Combine(dir, "7-dock.png"), null);
+        dock.SnapRender(Path.Combine(dir, "7-dock-buyutme.png"), -60);
+        var sp = new SpotlightWindow(this);
+        Pump(1.5);
+        sp.SnapRender("vis", Path.Combine(dir, "8-spotlight-uygulama.png"));
+        sp.SnapRender("12*(3+4)", Path.Combine(dir, "8-spotlight-hesap.png"));
+        Store.Current.Notch = true;
     }
 
     void UpdateMonitor()
@@ -281,8 +337,8 @@ public sealed unsafe class Island
     {
         try
         {
-            var s = Instance.Settings;
-            if (s != null && h == s.Hwnd) return s.WndProc(h, m, w, l);
+            var s = Instance.SurfaceFor(h);
+            if (s != null) return s.WndProc(h, m, w, l);
             return Instance.WndProc(h, m, w, l);
         }
         catch (Exception e) { Log.Error("WndProc " + m, e); return Win32.DefWindowProcW(h, m, w, l); }
@@ -346,6 +402,7 @@ public sealed unsafe class Island
                 if (Mode == Mode.Expanded && Panels[Tab].OnChar((char)w)) _dirty = true;
                 return 0;
             case Win32.WM_HOTKEY:
+                if ((int)w == SEARCH_HOTKEY_ID) { ToggleSpotlight(); return 0; }
                 if (Mode == Mode.Expanded) Collapse();
                 else { Expand(Tab); BeginKeyboard(); }
                 return 0;
@@ -373,7 +430,7 @@ public sealed unsafe class Island
             case Dispatcher.WM_RUN:
                 Dispatcher.Drain();
                 _dirty = true;
-                Settings?.Invalidate();
+                InvalidateSurfaces();
                 return 0;
             case WM_OPEN_SETTINGS:
                 OpenSettings();
@@ -392,7 +449,7 @@ public sealed unsafe class Island
         MSG msg;
         while (true)
         {
-            if (_animating || Settings?.Animating == true)
+            if (_animating || SurfacesAnimating())
             {
                 while (Win32.PeekMessageW(out msg, IntPtr.Zero, 0, 0, Win32.PM_REMOVE))
                 {
@@ -403,8 +460,8 @@ public sealed unsafe class Island
                 if (!_shown && Concealed) _animating = false; // gizliyken ada için asla dönme
                 double t0 = _sw.Elapsed.TotalMilliseconds;
                 if (_animating || _dirty) Frame();
-                Settings?.FrameIfNeeded();
-                if (!_animating && Settings?.Animating != true) continue;
+                FrameSurfaces();
+                if (!_animating && !SurfacesAnimating()) continue;
                 // vsync; DwmFlush başarısız olur ya da anında dönerse döngüyü ~120 fps'te sınırla
                 if (Win32.DwmFlush() != 0 || _sw.Elapsed.TotalMilliseconds - t0 < 4) Thread.Sleep(8);
             }
@@ -420,7 +477,7 @@ public sealed unsafe class Island
                     Win32.DispatchMessageW(ref msg);
                 }
                 if (_dirty) Frame();
-                Settings?.FrameIfNeeded();
+                FrameSurfaces();
             }
         }
     }
@@ -819,6 +876,7 @@ public sealed unsafe class Island
     /// <summary>100 ms'de bir (yalnızca görünürlük modu 1/2 iken): imleç üst kenara geldi mi, ada boşta mı.</summary>
     void ProximityTick()
     {
+        Dock?.Proximity();
         var s = Store.Current;
         if (s.Visibility == 0 || _hidden || SnapMode) return;
         if (!Win32.GetCursorPos(out var p)) return;
@@ -989,6 +1047,7 @@ public sealed unsafe class Island
         if (Mode == Mode.Expanded) Panels[Tab].Tick();
         ((TodayPanel)Panels[1]).BackgroundTick();
         Settings?.Invalidate();
+        Spotlight?.Tick(); Dock?.Tick();
         // boştaki yuvalar: saniyeli saat her saniye, CPU·RAM iki saniyede bir
         var st = Store.Current;
         bool Uses(Slot s) => st.IdleLeft == s || st.IdleCenter == s || st.IdleRight == s;
@@ -1000,7 +1059,8 @@ public sealed unsafe class Island
         // boşta bellek kırpma: kapalı ve hareketsiz 4 sn sonra bir kez
         if (Mode is Mode.Collapsed && !_animating)
         {
-            if (++_idleTicks == 4 && !_trimmed)
+            if (++_idleTicks % 60 == 0) _trimmed = false; // boşta her dakika yeniden kırp (Dock sürekli çalışıyor)
+            if (_idleTicks % 60 == 4 && !_trimmed && Settings == null && Spotlight?.IsOpen != true)
             {
                 Stats.Pause();
                 GC.Collect(2, GCCollectionMode.Forced, true, true);

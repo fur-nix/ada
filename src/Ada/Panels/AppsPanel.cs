@@ -12,7 +12,6 @@ public sealed class AppsPanel : Panel
 {
     readonly TextBox _search = new() { Placeholder = "Uygulama ara…" };
     static readonly int SearchId = Ui.Id("apps.search");
-    readonly AppIndex _index = new();
     Spring _scroll = new(0, 260, 32);
     int _sel;
 
@@ -23,13 +22,13 @@ public sealed class AppsPanel : Panel
 
     public override void OnShow()
     {
-        _index.EnsureLoaded();
+        I.AppIndex.EnsureLoaded();
         _scroll.Snap(0); _sel = 0;
         // arama kutusuna hemen yazılabilsin (Spotlight hissi)
         if (I.KeyboardMode) Focus(_search, SearchId);
     }
 
-    List<AppIndex.Entry> Results() => AppIndex.Search(_index.All, _search.Text, 60);
+    List<AppIndex.Entry> Results() => AppIndex.Search(I.AppIndex.All, _search.Text, 60);
 
     protected override void OnTextChanged(TextBox box) { _sel = 0; _scroll.Target = 0; }
     protected override void OnSubmit(TextBox box) { var r = Results(); if (_sel < r.Count) Launch(r[_sel].Path, r[_sel].Name); }
@@ -102,7 +101,7 @@ public sealed class AppsPanel : Panel
     void DrawList(Rect list)
     {
         var res = Results();
-        if (_index.All.Count == 0) { G.Text("Uygulamalar taranıyor…", list, 12, Theme.Text3, FontWeight.SemiBold, TextAlignment.Center); U.NeedsFrame = true; return; }
+        if (I.AppIndex.All.Count == 0) { G.Text("Uygulamalar taranıyor…", list, 12, Theme.Text3, FontWeight.SemiBold, TextAlignment.Center); U.NeedsFrame = true; return; }
         if (res.Count == 0) { G.Text("Eşleşen uygulama yok", list, 12, Theme.Text3, FontWeight.SemiBold, TextAlignment.Center); return; }
         if (_sel >= res.Count) _sel = res.Count - 1;
         const float rowH = 30;
