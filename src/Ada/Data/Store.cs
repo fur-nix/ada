@@ -197,7 +197,7 @@ public sealed class State
         if (RadialApps.Count > 12) RadialApps = RadialApps.Take(12).ToList();
         if (LaunchCounts.Count > 400) // en az kullanılanları at
             LaunchCounts = LaunchCounts.OrderByDescending(kv => kv.Value).Take(300).ToDictionary(kv => kv.Key, kv => kv.Value);
-        SearchHotkey = Math.Clamp(SearchHotkey, 0, 2);
+        SearchHotkey = Math.Clamp(SearchHotkey, 0, 3);
         RadialHotkey = Math.Clamp(RadialHotkey, 0, 2);
         AppOverlapMode = Math.Clamp(AppOverlapMode, 0, 2);
         AiHotkey = Math.Clamp(AiHotkey, 0, 2);

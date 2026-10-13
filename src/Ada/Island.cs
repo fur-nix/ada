@@ -227,11 +227,13 @@ public sealed unsafe class Island
             if (s.Visibility == 0 && !s.DockAutoHide && s.AppOverlapMode == 0) Win32.KillTimer(Hwnd, T_PROX);
             else Win32.SetTimer(Hwnd, T_PROX, 100, IntPtr.Zero);
 
-            // Spotlight kısayolu
+            // Spotlight kısayolu: 0 Ctrl+Space, 1 Alt+Space, 2 Windows tuşu (kanca), 3 kapalı
             Win32.UnregisterHotKey(Hwnd, SEARCH_HOTKEY_ID);
             SearchHotkeyOk = true;
             if (s.SearchHotkey < 2)
                 SearchHotkeyOk = Win32.RegisterHotKey(Hwnd, SEARCH_HOTKEY_ID, (s.SearchHotkey == 0 ? Win32.MOD_CONTROL : Win32.MOD_ALT) | Win32.MOD_NOREPEAT, 0x20);
+            KeyboardHook.CanOpen = () => Store.Current.SearchHotkey == 2 && !_hidden && Spotlight?.IsOpen != true;
+            if (s.SearchHotkey == 2) KeyboardHook.Install(Hwnd); else KeyboardHook.Uninstall();
 
             // İmleç menüsü (daire) — bağımsız ana özellik
             bool radialOn = s.RadialEnabled;
@@ -363,6 +365,7 @@ public sealed unsafe class Island
     public void Shutdown()
     {
         MouseHook.Uninstall();
+        KeyboardHook.Uninstall();
         Dock?.Shutdown(); Dock = null;
         Taskbar.SetHidden(false);
     }
@@ -568,8 +571,13 @@ public sealed unsafe class Island
                 if ((int)w == SEARCH_HOTKEY_ID) { ToggleSpotlight(); return 0; }
                 if ((int)w == RADIAL_HOTKEY_ID) { ToggleRadial(); return 0; }
                 if ((int)w == AI_HOTKEY_ID) { ToggleAi(); return 0; }
+                // HOTKEY_ID: ana ada aç/kapat
+                if (!Store.Current.IslandEnabled) { ToggleSpotlight(); return 0; }
                 if (Mode == Mode.Expanded) Collapse();
                 else { Expand(Tab); BeginKeyboard(); }
+                return 0;
+            case KeyboardHook.WM_WINTAP:
+                ToggleSpotlight();
                 return 0;
             case Win32.WM_TIMER:
                 OnTimer((int)w);
@@ -649,8 +657,8 @@ public sealed unsafe class Island
                 FrameSurfaces();
                 ReplayDeferred();
                 if (!_animating && !SurfacesAnimating()) continue;
-                // vsync; DwmFlush başarısız olur ya da anında dönerse döngüyü ~120 fps'te sınırla
-                if (Win32.DwmFlush() != 0 || _sw.Elapsed.TotalMilliseconds - t0 < 4) Thread.Sleep(8);
+                // Ekran yenilemesine kilitle (144Hz'de tam 144 fps). DwmFlush bloklamıyorsa (kompozisyon kapalı) kısa uyu.
+                if (Win32.DwmFlush() != 0) Thread.Sleep(4);
             }
             else
             {
@@ -1287,7 +1295,7 @@ public sealed unsafe class Island
         if (Mode != Mode.Expanded && Uses(Slot.ClockSeconds)) _dirty = true;
         if (Mode != Mode.Expanded && Uses(Slot.CpuRam) && now.Second % 2 == 0) { Stats.SampleLight(); _dirty = true; }
         CheckReminders(now);
-        if (now.Second % 2 == 0 && !SnapMode) CheckFullscreen();
+        if (!SnapMode) CheckFullscreen();
 
         // boşta bellek kırpma: kapalı ve hareketsiz 4 sn sonra bir kez
         if (Mode is Mode.Collapsed && !_animating)
@@ -1321,9 +1329,9 @@ public sealed unsafe class Island
     [DllImport("user32.dll")] static extern bool MessageBeep(uint type);
     public void Beep() => MessageBeep(0x40);
 
+    bool _fsHookOff;
     void CheckFullscreen()
     {
-        if (!Store.Current.IslandEnabled) return;
         bool fs = false;
         if (Win32.SHQueryUserNotificationState(out var st) == 0 && st is 3 or 4) fs = true; // D3D tam ekran / sunum
         var fg = Win32.GetForegroundWindow();
@@ -1340,9 +1348,22 @@ public sealed unsafe class Island
         if (fs == _hidden) return;
         if (fs && Mode == Mode.Expanded) return;
         _hidden = fs;
+
+        // Oyunda/tam ekranda düşük seviye fare kancasını kaldır → fare gecikmesi/takılma biter
+        // (kanca tüm sistem fare olaylarını bu sürece uğratıyor; oyunda bu pahalı)
+        if (fs && (MouseHook.Installed || KeyboardHook.Installed)) { MouseHook.Uninstall(); KeyboardHook.Uninstall(); _fsHookOff = true; }
+        else if (!fs && _fsHookOff)
+        {
+            _fsHookOff = false;
+            var s = Store.Current;
+            if (s.RadialEnabled && s.RadialRightHold) MouseHook.Install(Hwnd);
+            if (s.SearchHotkey == 2) KeyboardHook.Install(Hwnd);
+        }
+
         if (fs) { Mode = Mode.Collapsed; _live = null; }
-        else if (!_shown) { Win32.ShowWindow(Hwnd, Win32.SW_SHOWNOACTIVATE); _shown = true; }
+        else if (!_shown && Store.Current.IslandEnabled) { Win32.ShowWindow(Hwnd, Win32.SW_SHOWNOACTIVATE); _shown = true; }
         UpdateEqTimer();
+        Dock?.Invalidate(); // dock da tam ekranda çekilsin / çıkınca geri gelsin
         _dirty = true;
     }
 

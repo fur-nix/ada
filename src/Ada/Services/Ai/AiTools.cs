@@ -13,6 +13,8 @@ public sealed class ToolDef
     public required string Description;
     public required JsonNode Schema;
     public bool Destructive;
+    /// <summary>Çağrı başına ek onay koşulu (ör. çalışma klasörü dışı, Win kısayolu). true → onay iste.</summary>
+    public Func<JsonObject, bool>? Gate;
     /// <summary>Onay kutusunda gösterilecek kısa özet (yıkıcı araçlarda).</summary>
     public Func<JsonObject, string>? Preview;
     public required Func<JsonObject, CancellationToken, Task<string>> Run;
@@ -47,14 +49,18 @@ public sealed class AiTools
 
     public static readonly HashSet<string> ComputerTools = new() { "screenshot", "click", "type_text", "press_keys", "scroll", "wait" };
 
-    /// <summary>Yol çalışma klasörünün içinde mi? Dışarıdaki yollar yıkıcı sayılır (onay ister).</summary>
-    public string Resolve(string path) => Resolve(path);
+    /// <summary>Yol çalışma klasörünün içinde mi? Dışarıdaki yollar onay ister.</summary>
+    public string Resolve(string path) => Resolve(path, out _);
+
+    public bool Outside(string path) { Resolve(path, out var o); return o; }
 
     public string Resolve(string path, out bool outside)
     {
-        var root = _workDir();
+        var root = _workDir().TrimEnd(Path.DirectorySeparatorChar);
         var full = Path.IsPathRooted(path) ? Path.GetFullPath(path) : Path.GetFullPath(Path.Combine(root, path));
-        outside = !full.StartsWith(root, StringComparison.OrdinalIgnoreCase);
+        // ayraç ekleyerek önek hilesini engelle: C:\Work, C:\Workgizli'yi kapsamamalı
+        outside = !(full.Equals(root, StringComparison.OrdinalIgnoreCase)
+                    || full.StartsWith(root + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase));
         return full;
     }
 
@@ -81,6 +87,8 @@ public sealed class AiTools
             {
                 Name = "read_file", Description = "Bir metin dosyasının içeriğini okur (ilk 100 KB).",
                 Schema = Obj(("path", "string", "Dosya yolu", true)),
+                Gate = a => Outside(S(a, "path")), // çalışma klasörü dışını okumak onay ister
+                Preview = a => "Dış konumdan oku: " + Resolve(S(a, "path")),
                 Run = (a, _) =>
                 {
                     var f = Resolve(S(a, "path"));
@@ -161,6 +169,9 @@ public sealed class AiTools
             {
                 Name = "open_path", Description = "Bir dosyayı, klasörü, uygulamayı ya da bağlantıyı Windows'ta açar.",
                 Schema = Obj(("target", "string", "Yol, uygulama ya da https:// adresi", true)),
+                // http(s) ve ms-settings bağlantıları doğrudan; dosya/program/şema açmak onay ister (keyfi exe/komut çalıştırmayı engeller)
+                Gate = a => !IsSafeOpen(S(a, "target")),
+                Preview = a => "Aç: " + S(a, "target"),
                 Run = (a, _) => { Native.Win32.ShellExecuteW(IntPtr.Zero, "open", S(a, "target"), null, null, 1); return Task.FromResult("Açıldı: " + S(a, "target")); },
             },
         };
@@ -192,8 +203,11 @@ public sealed class AiTools
         });
         tools.Add(new ToolDef
         {
-            Name = "press_keys", Description = "Kısayol tuşu basar: enter, tab, esc, ctrl+c, alt+tab, win, ctrl+a gibi.",
+            Name = "press_keys", Description = "Kısayol tuşu basar: enter, tab, esc, ctrl+c, alt+tab, ctrl+a gibi.",
             Schema = Obj(("keys", "string", "Tuş kombinasyonu", true)),
+            // Win tuşlu kombinasyonlar (Win+R çalıştır kutusu vb.) PowerShell onayını atlayabilir → onay iste
+            Gate = a => { var k = S(a, "keys").ToLowerInvariant(); return k.Contains("win") || k.Contains("meta") || k.Contains("super"); },
+            Preview = a => "Kısayol tuşu: " + S(a, "keys"),
             Run = (a, _) => { ComputerControl.Hotkey(S(a, "keys")); return Task.FromResult("basıldı: " + S(a, "keys")); },
         });
         tools.Add(new ToolDef
@@ -225,4 +239,13 @@ public sealed class AiTools
     }
 
     static string Quote(string s) => "\"" + s.Replace("\"", "\\\"") + "\"";
+
+    /// <summary>Onaysız açılabilecek güvenli hedef: http(s) ya da ms-settings/ms-screenclip bağlantısı. Dosya/exe/şema değil.</summary>
+    static bool IsSafeOpen(string target)
+    {
+        var t = target.Trim();
+        if (t.StartsWith("http://", StringComparison.OrdinalIgnoreCase) || t.StartsWith("https://", StringComparison.OrdinalIgnoreCase)) return true;
+        if (t.StartsWith("ms-settings:", StringComparison.OrdinalIgnoreCase) || t.StartsWith("ms-screenclip:", StringComparison.OrdinalIgnoreCase)) return true;
+        return false;
+    }
 }

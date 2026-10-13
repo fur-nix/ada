@@ -20,10 +20,20 @@ public sealed class AppIndex
         {
             var list = new List<Entry>();
             var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            void Add(string name, string path, string kind)
+            {
+                name = name.Trim();
+                if (name.Length == 0 || !seen.Add(name)) return;
+                list.Add(new Entry(name, path, kind));
+            }
+
+            // 1) Başlat menüsü + masaüstü kısayolları (tüm kullanıcılar + bu kullanıcı)
             foreach (var root in new[]
                      {
                          Environment.GetFolderPath(Environment.SpecialFolder.CommonPrograms),
-                         Environment.GetFolderPath(Environment.SpecialFolder.Programs)
+                         Environment.GetFolderPath(Environment.SpecialFolder.Programs),
+                         Environment.GetFolderPath(Environment.SpecialFolder.CommonDesktopDirectory),
+                         Environment.GetFolderPath(Environment.SpecialFolder.DesktopDirectory),
                      })
             {
                 try
@@ -33,16 +43,66 @@ public sealed class AppIndex
                         var name = Path.GetFileNameWithoutExtension(f);
                         var low = name.ToLowerInvariant();
                         if (low.Contains("uninstall") || low.Contains("kaldır") || low.Contains("readme") || low.Contains("help")) continue;
-                        if (!seen.Add(name)) continue;
                         var folder = Path.GetFileName(Path.GetDirectoryName(f)) ?? "";
-                        list.Add(new Entry(name, f, folder.Contains("game", StringComparison.OrdinalIgnoreCase) || folder.Contains("oyun", StringComparison.OrdinalIgnoreCase) ? "Oyun" : "Uygulama"));
+                        Add(name, f, folder.Contains("game", StringComparison.OrdinalIgnoreCase) || folder.Contains("oyun", StringComparison.OrdinalIgnoreCase) ? "Oyun" : "Uygulama");
                     }
                 }
                 catch { }
             }
+
+            // 2) Kayıt defterindeki kurulu programlar (kısayolu olmayan OpenIV vb. için)
+            ScanUninstall(Microsoft.Win32.Registry.LocalMachine, @"SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall", Add);
+            ScanUninstall(Microsoft.Win32.Registry.LocalMachine, @"SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall", Add);
+            ScanUninstall(Microsoft.Win32.Registry.CurrentUser, @"SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall", Add);
+
             list.Sort((a, b) => string.Compare(a.Name, b.Name, StringComparison.CurrentCultureIgnoreCase));
             Dispatcher.Post(() => { All = list; _loading = false; });
         });
+    }
+
+    /// <summary>Kurulu programlar: DisplayName + çalıştırılabilir hedef (kısayolu olmasa bile bulunur).</summary>
+    static void ScanUninstall(Microsoft.Win32.RegistryKey hive, string sub, Action<string, string, string> add)
+    {
+        try
+        {
+            using var key = hive.OpenSubKey(sub);
+            if (key == null) return;
+            foreach (var subName in key.GetSubKeyNames())
+            {
+                try
+                {
+                    using var app = key.OpenSubKey(subName);
+                    if (app == null) continue;
+                    var name = app.GetValue("DisplayName") as string;
+                    if (string.IsNullOrWhiteSpace(name)) continue;
+                    if ((app.GetValue("SystemComponent") as int?) == 1) continue;
+                    if (app.GetValue("DisplayName") is string dn && (dn.Contains("Update", StringComparison.OrdinalIgnoreCase) || dn.Contains("Redistributable", StringComparison.OrdinalIgnoreCase) || dn.StartsWith("KB"))) continue;
+
+                    // çalıştırılabilir hedef: DisplayIcon exe → InstallLocation'daki uygun exe
+                    string? target = null;
+                    if (app.GetValue("DisplayIcon") is string di)
+                    {
+                        var exe = di.Split(',')[0].Trim('"');
+                        if (exe.EndsWith(".exe", StringComparison.OrdinalIgnoreCase) && File.Exists(exe)) target = exe;
+                    }
+                    if (target == null && app.GetValue("InstallLocation") is string loc && Directory.Exists(loc))
+                    {
+                        try
+                        {
+                            var exes = Directory.EnumerateFiles(loc, "*.exe", SearchOption.TopDirectoryOnly).ToList();
+                            target = exes.FirstOrDefault(e => Path.GetFileNameWithoutExtension(e).Replace(" ", "").Contains(new string(name.Where(char.IsLetterOrDigit).ToArray()).Replace(" ", "")[..Math.Min(4, name.Length)], StringComparison.OrdinalIgnoreCase))
+                                     ?? exes.FirstOrDefault(e => !Path.GetFileName(e).StartsWith("unins", StringComparison.OrdinalIgnoreCase))
+                                     ?? loc;
+                        }
+                        catch { target = loc; }
+                    }
+                    if (target == null) continue;
+                    add(name, target, "Program");
+                }
+                catch { }
+            }
+        }
+        catch { }
     }
 
     /// <summary>Basit bulanık arama: başlangıç eşleşmesi > kelime başı > içerir.</summary>

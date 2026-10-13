@@ -175,9 +175,10 @@ public sealed class AiService
         var bubble = new Bubble { Role = ChatRole.Tool, ToolName = call.Name, Running = true, Text = Summarize(call) };
         Dispatcher.Post(() => { Bubbles.Add(bubble); Notify(); });
 
-        if (def.Destructive)
+        bool needApproval = def.Destructive || def.Gate?.Invoke(call.Args) == true;
+        if (needApproval)
         {
-            var summary = def.Preview?.Invoke(call.Args) ?? call.Name;
+            var summary = def.Preview?.Invoke(call.Args) ?? Summarize(call);
             bool ok = await AskApproval(call.Name, summary, ct);
             if (!ok)
             {

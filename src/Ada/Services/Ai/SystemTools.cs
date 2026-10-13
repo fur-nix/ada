@@ -143,16 +143,50 @@ public static class WebSearch
     static readonly HttpClient Http = MakeClient();
     static HttpClient MakeClient()
     {
-        var h = new HttpClient { Timeout = TimeSpan.FromSeconds(15) };
+        // otomatik yönlendirmeyi kapat → yönlendirmeyle özel adrese kaçışı engelle (SSRF)
+        var handler = new HttpClientHandler { AllowAutoRedirect = false };
+        var h = new HttpClient(handler) { Timeout = TimeSpan.FromSeconds(15) };
         h.DefaultRequestHeaders.Add("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Ada/1.4");
         return h;
     }
+
+    /// <summary>Hedef herkese açık internet adresi mi? localhost/özel/bağlantı-yerel/meta-veri engellenir.</summary>
+    static async Task<bool> IsPublic(Uri uri, CancellationToken ct)
+    {
+        if (uri.Scheme != "http" && uri.Scheme != "https") return false;
+        try
+        {
+            var addrs = uri.HostNameType is UriHostNameType.IPv4 or UriHostNameType.IPv6
+                ? new[] { IPAddress.Parse(uri.Host) }
+                : await System.Net.Dns.GetHostAddressesAsync(uri.Host, ct);
+            foreach (var ip in addrs)
+            {
+                if (IPAddress.IsLoopback(ip)) return false;
+                var b = ip.GetAddressBytes();
+                if (ip.AddressFamily == System.Net.Sockets.AddressFamily.InterNetwork)
+                {
+                    if (b[0] == 10) return false;                          // 10/8
+                    if (b[0] == 172 && b[1] >= 16 && b[1] <= 31) return false; // 172.16/12
+                    if (b[0] == 192 && b[1] == 168) return false;         // 192.168/16
+                    if (b[0] == 169 && b[1] == 254) return false;         // link-local / bulut meta-veri 169.254.169.254
+                    if (b[0] == 127) return false;
+                }
+                else if (ip.IsIPv6LinkLocal || ip.IsIPv6SiteLocal || ip.Equals(IPAddress.IPv6Loopback)) return false;
+            }
+            return true;
+        }
+        catch { return false; }
+    }
+
+    // arama sabit, güvenilir bir hosta gider → yönlendirmeye izin veren ayrı istemci
+    static readonly HttpClient SearchHttp = new() { Timeout = TimeSpan.FromSeconds(15) };
 
     public static async Task<string> Run(string query, CancellationToken ct)
     {
         try
         {
-            var html = await Http.GetStringAsync("https://html.duckduckgo.com/html/?q=" + Uri.EscapeDataString(query), ct);
+            SearchHttp.DefaultRequestHeaders.TryAddWithoutValidation("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Ada/1.4");
+            var html = await SearchHttp.GetStringAsync("https://html.duckduckgo.com/html/?q=" + Uri.EscapeDataString(query), ct);
             var sb = new StringBuilder();
             int n = 0;
             foreach (Match m in Regex.Matches(html, "<a[^>]*class=\"result__a\"[^>]*href=\"([^\"]+)\"[^>]*>(.*?)</a>"))
@@ -175,6 +209,8 @@ public static class WebSearch
         try
         {
             if (!url.StartsWith("http", StringComparison.OrdinalIgnoreCase)) url = "https://" + url;
+            if (!Uri.TryCreate(url, UriKind.Absolute, out var uri) || !await IsPublic(uri, ct))
+                return "Bu adres getirilemez (yalnızca herkese açık http/https adresleri; yerel/özel adresler engellidir).";
             var html = await Http.GetStringAsync(url, ct);
             html = Regex.Replace(html, @"<script[\s\S]*?</script>|<style[\s\S]*?</style>|<[^>]+>", " ");
             html = WebUtility.HtmlDecode(Regex.Replace(html, @"\s+", " ")).Trim();

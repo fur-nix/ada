@@ -303,9 +303,10 @@ public sealed class Gfx : IDisposable
     /// <summary>Katmanlı yumuşak gölge.</summary>
     public void Shadow(Rect r, float rad, float spread, float strength, float dy = 4)
     {
-        // Eşit alfalı, dışa doğru seyrekleşen katmanlar → üst üste binince yumuşak (yaklaşık gauss) düşüş, basamak yok
-        const int N = 22;
-        float per = strength / N * 1.15f;
+        // Eşit alfalı, dışa doğru seyrekleşen katmanlar → üst üste binince yumuşak (yaklaşık gauss) düşüş.
+        // 22 → 13 katman: yazılım render'ında kare başına ciddi tasarruf, görsel fark neredeyse yok.
+        const int N = 13;
+        float per = strength / N * 1.25f;
         for (int i = N; i >= 1; i--)
         {
             float t = MathF.Pow(i / (float)N, 1.7f);

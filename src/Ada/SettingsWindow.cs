@@ -671,10 +671,16 @@ public sealed unsafe class SettingsWindow : ISurface
     {
         var st = Store.Current;
         float y = b.Y;
-        var c = Row(ref y, b, "Kısayol", I.SearchHotkeyOk
-            ? (st.SearchHotkey == 0 ? "Ctrl+Space · not: VS Code'daki Ctrl+Space önerisini kullanamazsın" : "Spotlight'ı her yerden açar")
-            : "⚠ Bu kısayol başka bir uygulamada kullanımda", 64);
-        int v = U.Segmented(Ui.Id("q.hk"), c, new[] { "Ctrl+Space", "Alt+Space", "Kapalı" }, st.SearchHotkey);
+        string hkDesc = st.SearchHotkey switch
+        {
+            0 => "Ctrl+Space · not: VS Code'daki Ctrl+Space önerisini kullanamazsın",
+            1 => "Alt+Space ile her yerden açılır",
+            2 => "Windows tuşuna basınca Başlat yerine Spotlight açılır (Win+E gibi kombinasyonlar çalışmaya devam eder)",
+            _ => "Kısayol kapalı — Dock'tan ya da imleç menüsünden açabilirsin",
+        };
+        var c = Row(ref y, b, "Kısayol", I.SearchHotkeyOk ? hkDesc : "⚠ Bu kısayol başka bir uygulamada kullanımda", 64);
+        var hr = new Rect(c.X - 110, c.Y, c.Width + 110, c.Height);
+        int v = U.Segmented(Ui.Id("q.hk"), hr, new[] { "Ctrl+Space", "Alt+Space", "Windows tuşu", "Kapalı" }, st.SearchHotkey);
         if (v != st.SearchHotkey) { st.SearchHotkey = v; Changed(); }
         c = Row(ref y, b, "Dosyaları ara", "Masaüstü, Belgeler, İndirilenler, Resimler, Müzik, Videolar", 58);
         if (U.Toggle(Ui.Id("q.files"), c, st.SearchFiles)) { st.SearchFiles = !st.SearchFiles; Changed(); }

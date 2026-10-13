@@ -90,8 +90,9 @@ public sealed unsafe class AiWindow : ISurface
             case WM_NCHITTEST:
             {
                 var p = new POINT(Win32.LoWord(l), Win32.HiWord(l)); Win32.ScreenToClient(h, ref p);
-                float y = p.Y / I.Scale - M;
-                return y is >= 0 and < 46 ? 2 : 1; // başlık sürüklenir
+                float x = p.X / I.Scale - M, y = p.Y / I.Scale - M;
+                // başlık sürüklenir ama sağdaki butonlar (yeni/ayarlar/kapat) tıklanabilsin
+                return (y is >= 0 and < 46 && x < W - 120) ? 2 : 1;
             }
             case Win32.WM_MOUSEMOVE:
                 U.Mouse = new Vector2(Win32.LoWord(l) / I.Scale - M, Win32.HiWord(l) / I.Scale - M); U.Inside = true;
