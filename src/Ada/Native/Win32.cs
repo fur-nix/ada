@@ -177,6 +177,23 @@ public static unsafe class Win32
     [DllImport("user32.dll")] public static extern int GetWindowTextLengthW(IntPtr h);
     [DllImport("user32.dll")] public static extern bool IsZoomed(IntPtr h);
     [DllImport("user32.dll")] public static extern bool PrintWindow(IntPtr h, IntPtr dc, uint flags);
+    [DllImport("user32.dll")] public static extern int GetSystemMetrics(int index);
+    [DllImport("user32.dll")] public static extern bool SetCursorPos(int x, int y);
+    [DllImport("user32.dll")] public static extern uint SendInput(uint n, INPUT2* inputs, int size);
+    [DllImport("user32.dll")] public static extern short VkKeyScanW(char ch);
+    [DllImport("user32.dll")] public static extern IntPtr WindowFromPoint(POINT p);
+    [DllImport("gdi32.dll")] public static extern bool BitBlt(IntPtr dst, int x, int y, int w, int h, IntPtr src, int sx, int sy, uint rop);
+
+    public const int SM_XVIRTUALSCREEN = 76, SM_YVIRTUALSCREEN = 77, SM_CXVIRTUALSCREEN = 78, SM_CYVIRTUALSCREEN = 79;
+
+    [StructLayout(LayoutKind.Sequential)]
+    public struct INPUT2 { public uint type; public INPUTUNION u; }
+    [StructLayout(LayoutKind.Explicit)]
+    public struct INPUTUNION { [FieldOffset(0)] public MOUSEINPUT2 mi; [FieldOffset(0)] public KEYBDINPUT2 ki; }
+    [StructLayout(LayoutKind.Sequential)]
+    public struct MOUSEINPUT2 { public int dx, dy; public uint mouseData, dwFlags, time; public IntPtr dwExtraInfo; }
+    [StructLayout(LayoutKind.Sequential)]
+    public struct KEYBDINPUT2 { public ushort wVk, wScan; public uint dwFlags, time; public IntPtr dwExtraInfo; }
     [DllImport("dwmapi.dll")] public static extern int DwmGetWindowAttribute(IntPtr h, int attr, out int value, int size);
     [DllImport("shell32.dll")] public static extern IntPtr SHAppBarMessage(uint msg, ref APPBARDATA data);
     [DllImport("kernel32.dll")] public static extern IntPtr OpenProcess(uint access, bool inherit, int pid);

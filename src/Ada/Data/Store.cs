@@ -12,6 +12,14 @@ public sealed class TodoItem
     public DateTime Created { get; set; } = DateTime.Now;
 }
 
+public sealed class AiProfile
+{
+    public string ApiKey { get; set; } = "";
+    public string Model { get; set; } = "";
+    /// <summary>Yalnızca "custom" ve "ollama" için; diğerlerinde sağlayıcının varsayılan adresi kullanılır.</summary>
+    public string BaseUrl { get; set; } = "";
+}
+
 public sealed class PinnedApp
 {
     public string Name { get; set; } = "";
@@ -29,8 +37,18 @@ public sealed class State
     public int LastTab { get; set; }
     public bool FirstRunDone { get; set; }
 
-    public const int TabCount = 7;
-    /// <summary>Ayar dosyası düzen sürümü (2: Hitodama tarzı 7 sekme).</summary>
+    // ---- Dört ana özellik: bağımsız aç/kapat ----
+    /// <summary>Üst ada (dynamic island) etkin mi.</summary>
+    public bool IslandEnabled { get; set; } = true;
+    /// <summary>İmleç menüsü (daire) etkin mi.</summary>
+    public bool RadialEnabled { get; set; } = true;
+    /// <summary>Yapay zeka asistanı etkin mi (sekme + pencere + kısayol).</summary>
+    public bool AiEnabled { get; set; } = true;
+    /// <summary>Yapay zeka penceresi kısayolu: 0 Ctrl+Shift+Space, 1 Ctrl+Alt+A, 2 kapalı.</summary>
+    public int AiHotkey { get; set; }
+
+    public const int TabCount = 8;
+    /// <summary>Ayar dosyası düzen sürümü (2: Hitodama tarzı 7 sekme; 3: Yapay Zeka sekmesi).</summary>
     public int Version { get; set; }
     public string? WallpaperFolder { get; set; }
 
@@ -99,10 +117,34 @@ public sealed class State
     // ---- Dairesel menü ve sabitleme ----
     /// <summary>Dairesel menünün kendi listesi (Dock'tan bağımsız; kullanıcı ekler).</summary>
     public List<PinnedApp> RadialApps { get; set; } = new();
+    /// <summary>Sağ tuşu basılı tutunca dairesel menü açılsın.</summary>
+    public bool RadialRightHold { get; set; } = true;
+    /// <summary>Sağ tuş bırakılınca: 0 üzerindeki öğeyi aç / boşsa kapan, 1 menü açık kalsın (tıkla seç, boşluğa tıkla kapan).</summary>
+    public int RadialReleaseMode { get; set; }
     /// <summary>Dairesel menü kısayolu: 0 Alt+Q, 1 Ctrl+Alt+Q, 2 kapalı.</summary>
     public int RadialHotkey { get; set; }
     /// <summary>Gezgin sağ tık menüsüne "Ada Dock'a sabitle" eklensin.</summary>
     public bool ShellPinMenu { get; set; } = true;
+
+    // ---- Yapay zeka asistanı (çok sağlayıcılı) ----
+    /// <summary>Seçili sağlayıcı anahtarı: anthropic | gemini | openai | openrouter | groq | ollama | custom.</summary>
+    public string AiProvider { get; set; } = "gemini";
+    /// <summary>Sağlayıcı başına ayar (anahtar, model, özel adres). Anahtarlar yalnızca bu bilgisayarda state.json'da saklanır.</summary>
+    public Dictionary<string, AiProfile> AiProfiles { get; set; } = new();
+    /// <summary>Asistanın dosya/komut işlemleri için izinli kök klasör (boşsa masaüstü).</summary>
+    public string AiWorkDir { get; set; } = "";
+    /// <summary>true: her dosya silme/komut önce onay ister (önerilen).</summary>
+    public bool AiConfirm { get; set; } = true;
+    public bool AiWebSearch { get; set; } = true;
+    /// <summary>Asistan ekranı görüp fare/klavye ile bilgisayarı kullanabilsin (görüntü destekli model gerekir). Varsayılan kapalı.</summary>
+    public bool AiComputerUse { get; set; }
+
+    public AiProfile Ai(string? provider = null)
+    {
+        provider ??= AiProvider;
+        if (!AiProfiles.TryGetValue(provider, out var p)) { p = new AiProfile(); AiProfiles[provider] = p; }
+        return p;
+    }
 
     /// <summary>Spotlight: neyi kaç kez açtın (Launchy gibi sık kullanılanı öne alır).</summary>
     public Dictionary<string, int> LaunchCounts { get; set; } = new();
@@ -114,7 +156,7 @@ public sealed class State
     public bool SearchWeb { get; set; } = true;
 
     // ---- Sekmeler & genel ----
-    public List<int> TabOrder { get; set; } = new() { 0, 1, 2, 3, 4, 5, 6 };
+    public List<int> TabOrder { get; set; } = new() { 0, 1, 7, 2, 3, 4, 5, 6 };
     public List<int> HiddenTabs { get; set; } = new();
     /// <summary>0 Ctrl+Alt+Space, 1 Ctrl+Shift+Space, 2 Alt+Shift+Space, 3 kapalı.</summary>
     public int Hotkey { get; set; }
@@ -128,6 +170,13 @@ public sealed class State
             Notch = true; Accent = "A6E3A1";
             TabOrder = new() { 0, 1, 2, 3, 4, 5, 6 }; HiddenTabs = new(); LastTab = 0;
             Version = 2;
+        }
+        if (Version < 3)
+        {
+            // v2 → v3: Yapay Zeka sekmesini (7) görünür sıraya ekle
+            if (!TabOrder.Contains(7)) TabOrder.Insert(Math.Min(2, TabOrder.Count), 7);
+            HiddenTabs.Remove(7);
+            Version = 3;
         }
         Size = Math.Clamp(Size, 0, 2);
         Roundness = Math.Clamp(Roundness, 0.4f, 1f);
@@ -151,6 +200,8 @@ public sealed class State
         SearchHotkey = Math.Clamp(SearchHotkey, 0, 2);
         RadialHotkey = Math.Clamp(RadialHotkey, 0, 2);
         AppOverlapMode = Math.Clamp(AppOverlapMode, 0, 2);
+        AiHotkey = Math.Clamp(AiHotkey, 0, 2);
+        AiProfiles ??= new();
         if (ChargeLimit is not (0 or 60 or 80 or 100)) ChargeLimit = 0;
         var order = TabOrder.Where(t => t is >= 0 and < TabCount).Distinct().ToList();
         for (int i = 0; i < TabCount; i++) if (!order.Contains(i)) order.Add(i);

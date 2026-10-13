@@ -9,6 +9,7 @@ using Vortice.DirectWrite;
 using Vortice.Mathematics;
 using Rect = Vortice.Mathematics.Rect;
 
+using Ada.Services.Ai;
 namespace Ada;
 
 /// <summary>
@@ -34,16 +35,19 @@ public sealed unsafe class SettingsWindow : ISurface
     bool _confirmReset;
     DateTime _confirmUntil;
 
-    static readonly string[] Pages = { "Görünüm", "Boşta", "Davranış", "Dock", "Arama", "Sekmeler", "Genel", "Hakkında" };
-    public const int DockPage = 3;
-    static readonly string[] PageGlyphs = { Glyph.Theme, Glyph.Clock, Glyph.Sliders, "", "", Glyph.Apps, Glyph.Settings, "" };
+    static readonly string[] Pages = { "Özellikler", "Görünüm", "Boşta", "Davranış", "Dock", "Arama", "Daire", "Yapay Zeka", "Sekmeler", "Genel", "Hakkında" };
+    public const int FeaturesPage = 0, DockPage = 4, AiPage = 7;
+    static readonly string[] PageGlyphs = { "", Glyph.Theme, Glyph.Clock, Glyph.Sliders, "", "", "", "", Glyph.Apps, Glyph.Settings, "" };
     static readonly string[] PageSubs =
     {
+        "Dört ana özelliği aç / kapat (hepsi birbirinden bağımsız)",
         "Adanın şekli, boyutu ve rengi",
         "Kapalıyken solda, ortada ve sağda ne görünsün",
         "Açılma, kapanma ve bildirimler",
         "MacBook tarzı alt çubuk ve Windows görev çubuğu",
         "Spotlight: uygulama, dosya, hesap makinesi, web",
+        "İmlecin etrafında açılan dairesel başlatıcı",
+        "Gemini, Groq, Ollama… ücretsiz de çalışır",
         "Hangi sekmeler görünsün, hangi sırayla",
         "Kısayol tuşu, başlangıç ve veriler",
         "Sürüm, kaynak kullanımı ve yol haritası"
@@ -135,7 +139,18 @@ public sealed unsafe class SettingsWindow : ISurface
             case WM_SETCURSOR:
                 if (U.WantHand && Win32.LoWord(l) == 1) { Win32.SetCursor(Win32.LoadCursorW(IntPtr.Zero, 32649)); return 1; }
                 break;
+            case Win32.WM_CHAR:
+                if (_focusField != null && _focusField.OnChar((char)w)) _dirty = true;
+                return 0;
             case Win32.WM_KEYDOWN:
+                if (_focusField != null)
+                {
+                    int vk = (int)w;
+                    if (vk == 0x1B) { _focusField = null; _focusFieldId = 0; }
+                    else { bool ctrl = Win32.GetKeyState(0x11) < 0; _focusField.OnKey(vk, ctrl, () => ClipboardService.ReadText(Hwnd)); }
+                    _dirty = true;
+                    return 0;
+                }
                 if ((int)w == 0x1B) Close();
                 else if ((int)w == 0x28 || (int)w == 0x26) Go(Math.Clamp(_page + ((int)w == 0x28 ? 1 : -1), 0, Pages.Length - 1));
                 return 0;
@@ -253,14 +268,17 @@ public sealed unsafe class SettingsWindow : ISurface
         _lastY = body.Y;
         switch (p)
         {
-            case 0: PageLook(body); break;
-            case 1: PageIdle(body); break;
-            case 2: PageBehavior(body); break;
-            case 3: PageDock(body); break;
-            case 4: PageSearch(body); break;
-            case 5: PageTabs(body); break;
-            case 6: PageGeneral(body); break;
-            case 7: PageAbout(body); break;
+            case 0: PageFeatures(body); break;
+            case 1: PageLook(body); break;
+            case 2: PageIdle(body); break;
+            case 3: PageBehavior(body); break;
+            case 4: PageDock(body); break;
+            case 5: PageSearch(body); break;
+            case 6: PageRadial(body); break;
+            case 7: PageAi(body); break;
+            case 8: PageTabs(body); break;
+            case 9: PageGeneral(body); break;
+            case 10: PageAbout(body); break;
         }
         G.PopTransform();
         G.PopClip();
@@ -393,6 +411,17 @@ public sealed unsafe class SettingsWindow : ISurface
         int v = U.Segmented(Ui.Id("s.vis"), vr, new[] { "Her zaman", "Fare gelince", "Sadece kısayol" }, st.Visibility);
         if (v != st.Visibility) { st.Visibility = v; Changed(); }
 
+        string[] ovDesc =
+        {
+            "Tarayıcı vb. tam açıkken de ada normal boyutta kalır",
+            "Sekmelerin önüne geçmeyen ince bir çizgiye dönüşür; üzerine gelince açılır",
+            "Tamamen çekilir; fareyi üst kenara götürünce belirir"
+        };
+        c = Row(ref y, b, "Uygulama penceresi üstteyken", ovDesc[st.AppOverlapMode], 58);
+        var ovr = new Rect(c.X - 90, c.Y, c.Width + 90, c.Height);
+        v = U.Segmented(Ui.Id("s.overlap"), ovr, new[] { "Normal", "Çok küçük", "Fare gelince" }, st.AppOverlapMode);
+        if (v != st.AppOverlapMode) { st.AppOverlapMode = v; Changed(); }
+
         c = Row(ref y, b, "Üzerine gelince aç", "Tıklamadan, imleç adada kısa süre durunca açılır", 50);
         if (U.Toggle(Ui.Id("s.hover"), c, st.OpenOnHover)) { st.OpenOnHover = !st.OpenOnHover; Changed(); }
         c = Row(ref y, b, "Kapanma gecikmesi", $"İmleç çıktıktan {st.CollapseDelayMs / 1000f:0.0} sn sonra kapanır", 50);
@@ -416,6 +445,163 @@ public sealed unsafe class SettingsWindow : ISurface
         c = Row(ref y, b, "Hatırlatıcı sesi", null, 40);
         if (U.Toggle(Ui.Id("s.n4"), c, st.ReminderSound)) { st.ReminderSound = !st.ReminderSound; Changed(); }
     }
+
+    void PageFeatures(Rect b)
+    {
+        var st = Store.Current;
+        float y = b.Y;
+        FeatureCard(ref y, b, "Üst ada", "Ekranın üstündeki dynamic island (sekmeler, medya, bildirimler).", "",
+            st.IslandEnabled, () => { st.IslandEnabled = !st.IslandEnabled; Changed(); });
+        FeatureCard(ref y, b, "Dock", "Ekranın altındaki MacBook tarzı uygulama çubuğu.", "",
+            st.DockEnabled, () => { st.DockEnabled = !st.DockEnabled; Changed(); });
+        FeatureCard(ref y, b, "İmleç menüsü (daire)", "Sağ tuşu basılı tutunca imlecin etrafında açılan başlatıcı.", "",
+            st.RadialEnabled, () => { st.RadialEnabled = !st.RadialEnabled; Changed(); });
+        FeatureCard(ref y, b, "Yapay zeka asistanı", "Bilgisayarı kullanan sohbet asistanı — Ctrl+Shift+Space ile her yerden açılır.", "",
+            st.AiEnabled, () => { st.AiEnabled = !st.AiEnabled; Changed(); });
+        G.Text("Her özellik birbirinden bağımsız. İstersen sadece yapay zekayı ya da sadece imleç menüsünü kullanabilirsin; " +
+               "üst ada kapalıyken bile yapay zeka Ctrl+Shift+Space ile açılır.",
+            new Rect(b.X, y + 8, b.Width, 40), 11.5f, Theme.Text3, FontWeight.Normal, font: Theme.TextFont, wrap: true);
+    }
+
+    void FeatureCard(ref float y, Rect b, string title, string desc, string glyph, bool on, Action toggle)
+    {
+        var r = new Rect(b.X, y, b.Width, 64);
+        G.FillRound(r, 14, Theme.Mix(Theme.Rgb(0xFFFFFF, 0.03f), Theme.Accent.WithA(0.1f), on ? 1 : 0));
+        G.StrokeRound(r, 14, on ? Theme.Accent.WithA(0.4f) : Theme.Rgb(0xFFFFFF, 0.06f), 1);
+        var ic = new Vector2(r.X + 30, r.CenterY);
+        G.FillCircle(ic, 18, on ? Theme.Accent.WithA(0.9f) : Theme.Rgb(0xFFFFFF, 0.08f));
+        G.Icon(glyph, ic, 15, on ? Theme.Rgb(0x0B140D) : Theme.Text2);
+        G.Text(title, new Rect(r.X + 58, r.Y + 12, r.Width - 160, 20), 14, Theme.Text, FontWeight.Bold);
+        G.Text(desc, new Rect(r.X + 58, r.Y + 34, r.Width - 160, 18), 11, Theme.Text3, FontWeight.Normal, font: Theme.TextFont);
+        if (U.Toggle(Ui.Id("feat", title.GetHashCode()), new Rect(r.Right - 70, r.CenterY - 14, 54, 28), on)) toggle();
+        y += 72;
+    }
+
+    void PageAi(Rect b)
+    {
+        var st = Store.Current;
+        var ai = I.Ai;
+        float y = b.Y;
+        if (!st.AiEnabled)
+        {
+            var c = Row(ref y, b, "Yapay zekayı aç", "Özellikler sayfasından da açılır", 54);
+            if (U.Toggle(Ui.Id("ai.on"), c, false)) { st.AiEnabled = true; Changed(); }
+            return;
+        }
+
+        Section(ref y, b, "SAĞLAYICI");
+        var provs = Providers.All;
+        // sağlayıcı seçimi: dikey liste
+        for (int i = 0; i < provs.Length; i++)
+        {
+            var p = provs[i];
+            var r = new Rect(b.X, y, b.Width, 44);
+            bool sel = st.AiProvider == p.Key;
+            float hv = U.Anim(Ui.Id("ai.prov", i), U.Hit(r) ? 1 : 0);
+            G.FillRound(r, 12, sel ? Theme.Accent.WithA(0.18f) : Theme.Rgb(0xFFFFFF, 0.03f + 0.03f * hv));
+            if (sel) G.StrokeRound(r, 12, Theme.Accent.WithA(0.5f), 1);
+            G.StrokeCircle(new Vector2(r.X + 20, r.CenterY), 6, sel ? Theme.Accent : Theme.Text3, 1.5f);
+            if (sel) G.FillCircle(new Vector2(r.X + 20, r.CenterY), 3.2f, Theme.Accent);
+            G.Text(p.Name, new Rect(r.X + 38, r.Y + 6, 240, 18), 13, Theme.Text, sel ? FontWeight.Bold : FontWeight.SemiBold);
+            G.Text(p.Note, new Rect(r.X + 38, r.Y + 24, r.Width - 48, 14), 10.5f, p.Note.Contains("Ücretsiz") || p.Note.Contains("ücretsiz") ? Theme.Green : Theme.Text3, FontWeight.SemiBold);
+            if (U.Click(Ui.Id("ai.prov", i), r) && !sel) { st.AiProvider = p.Key; Changed(); }
+            y += 50;
+        }
+
+        var cur = Providers.Get(st.AiProvider);
+        var prof = st.Ai();
+        Section(ref y, b, "BAĞLANTI");
+        if (cur.Key != "ollama")
+        {
+            var kr = Row(ref y, b, "API anahtarı", cur.KeyUrl.Length > 0 ? "Ücretsiz almak için: " + cur.KeyUrl : "Sağlayıcıdan al", 56);
+            DrawKeyBox(new Rect(kr.X - 120, kr.Y, kr.Width + 120, 32), prof);
+            if (cur.KeyUrl.Length > 0)
+            {
+                var gr = Row(ref y, b, "Anahtar sayfasını aç", cur.KeyUrl, 48);
+                if (U.Pill(Ui.Id("ai.keyurl"), new Rect(gr.Right - 120, gr.Y, 120, 32), "Tarayıcıda aç", Theme.Surface, Theme.Text, Glyph.Folder))
+                    Win32.ShellExecuteW(IntPtr.Zero, "open", cur.KeyUrl, null, null, Win32.SW_SHOWNORMAL);
+            }
+        }
+        var mr = Row(ref y, b, "Model", "Boş bırakırsan: " + cur.DefaultModel, 56);
+        DrawTextSetting(new Rect(mr.X - 60, mr.Y, mr.Width + 60, 32), _modelBox, prof.Model, v => { prof.Model = v; Changed(); }, cur.DefaultModel);
+        if (cur.Key is "custom" or "ollama")
+        {
+            var br = Row(ref y, b, "Sunucu adresi", "OpenAI uyumlu /v1 adresi", 56);
+            DrawTextSetting(new Rect(br.X - 60, br.Y, br.Width + 60, 32), _baseBox, prof.BaseUrl, v => { prof.BaseUrl = v; Changed(); }, cur.DefaultBase);
+        }
+        var tr = Row(ref y, b, "Bağlantıyı test et", _testResult.Length > 0 ? _testResult : "Seçili sağlayıcıya bir mesaj gönderir", 56);
+        if (U.Pill(Ui.Id("ai.test"), new Rect(tr.Right - 120, tr.Y, 120, 32), _testing ? "Test ediliyor…" : "Test et", Theme.Accent, Theme.Rgb(0x0B140D)) && !_testing)
+        {
+            _testing = true; _testResult = "";
+            ai.RunTest(r => { _testResult = r; _testing = false; _dirty = true; });
+        }
+
+        Section(ref y, b, "YETENEKLER");
+        var w1 = Row(ref y, b, "Çalışma klasörü", st.AiWorkDir.Length > 0 ? st.AiWorkDir : "Masaüstü (varsayılan)", 56);
+        if (U.Pill(Ui.Id("ai.wd"), new Rect(w1.Right - 120, w1.Y, 120, 32), "Klasör seç", Theme.Surface, Theme.Text, Glyph.Folder))
+            Dispatcher.Post(() => { var p = AppsService.PickFile(Hwnd, "Çalışma klasöründen bir dosya seç"); if (p != null) { st.AiWorkDir = System.IO.Path.GetDirectoryName(p) ?? ""; Changed(); } });
+        var c2 = Row(ref y, b, "İnternette arama yapabilsin", "web_search ve fetch_url araçları", 50);
+        if (U.Toggle(Ui.Id("ai.web"), c2, st.AiWebSearch)) { st.AiWebSearch = !st.AiWebSearch; Changed(); }
+        var c3 = Row(ref y, b, "Her yıkıcı işlemde onay iste", "Silme, dosya yazma ve komutları önce sana sorar (önerilir)", 50);
+        if (U.Toggle(Ui.Id("ai.cfm"), c3, st.AiConfirm)) { st.AiConfirm = !st.AiConfirm; Changed(); }
+        var c4 = Row(ref y, b, "Bilgisayarı kullanabilsin", "Ekranı görüp fare/klavye ile WhatsApp vb. uygulamaları kullanır (görüntü destekli model gerekir)", 56);
+        if (U.Toggle(Ui.Id("ai.comp"), c4, st.AiComputerUse)) { st.AiComputerUse = !st.AiComputerUse; Changed(); }
+
+        Section(ref y, b, "KISAYOL");
+        var hk = Row(ref y, b, "Yapay zeka penceresi", I.AiHotkeyOk ? "Her yerden açar" : "⚠ Kısayol kullanımda", 54);
+        int v = U.Segmented(Ui.Id("ai.hk"), hk, new[] { "Ctrl+Shift+Space", "Ctrl+Alt+A", "Kapalı" }, st.AiHotkey);
+        if (v != st.AiHotkey) { st.AiHotkey = v; Changed(); }
+
+        G.Text("Anahtarların yalnızca bu bilgisayarda saklanır. Ollama'yı seçersen hiç anahtar gerekmez ve her şey bilgisayarında çalışır.",
+            new Rect(b.X, y + 6, b.Width, 36), 11, Theme.Text3, FontWeight.Normal, font: Theme.TextFont, wrap: true);
+        _lastY = MathF.Max(_lastY, y + 40);
+    }
+
+    readonly TextBox _keyBox = new() { Placeholder = "sk-…" };
+    readonly TextBox _modelBox = new();
+    readonly TextBox _baseBox = new();
+    TextBox? _focusField;
+    int _focusFieldId;
+    bool _keyVisible, _testing;
+    string _testResult = "";
+
+    void DrawKeyBox(Rect r, AiProfile prof)
+    {
+        int id = Ui.Id("ai.keybox");
+        bool focused = _focusFieldId == id;
+        if (!focused) _keyBox.Text = _keyVisible ? prof.ApiKey : new string('•', Math.Min(prof.ApiKey.Length, 32));
+        var inner = new Rect(r.X, r.Y, r.Width - 76, r.Height);
+        if (U.Click(id, inner)) { _focusField = _keyBox; _focusFieldId = id; _keyBox.Text = prof.ApiKey; _keyBox.Caret = _keyBox.Text.Length; _keyVisible = true; BeginKey(); }
+        _keyBox.Placeholder = "API anahtarını yapıştır";
+        _keyBox.Draw(U, id, inner, focused);
+        if (focused) { prof.ApiKey = _keyBox.Text; }
+        if (U.IconButton(Ui.Id("ai.keyshow"), new Vector2(r.Right - 56, r.CenterY), 14, _keyVisible ? "" : "", 12, Theme.Text2)) _keyVisible = !_keyVisible;
+        if (U.IconButton(Ui.Id("ai.keypaste"), new Vector2(r.Right - 22, r.CenterY), 14, "", 12, Theme.Text2))
+        {
+            var clip = Services.ClipboardService.ReadText(Hwnd);
+            if (!string.IsNullOrWhiteSpace(clip)) { prof.ApiKey = clip.Trim(); Changed(); }
+        }
+    }
+
+    void DrawTextSetting(Rect r, TextBox box, string value, Action<string> set, string placeholder)
+    {
+        int id = Ui.Id("ai.txt", box.GetHashCode());
+        bool focused = _focusFieldId == id;
+        if (!focused) box.Text = value;
+        if (U.Click(id, r)) { _focusField = box; _focusFieldId = id; box.Caret = box.Text.Length; BeginKey(); }
+        box.Placeholder = placeholder;
+        box.Draw(U, id, r, focused);
+        if (focused && box.Text != value) set(box.Text);
+    }
+
+    void BeginKey()
+    {
+        _kbActive = true;
+        int ex = Win32.GetWindowLongW(Hwnd, Win32.GWL_EXSTYLE);
+        Win32.SetWindowLongW(Hwnd, Win32.GWL_EXSTYLE, ex & ~Win32.WS_EX_NOACTIVATE);
+        Win32.SetForegroundWindow(Hwnd);
+    }
+    bool _kbActive;
 
     void PageDock(Rect b)
     {
@@ -499,6 +685,62 @@ public sealed unsafe class SettingsWindow : ISurface
             Dispatcher.Post(I.ToggleSpotlight);
         G.Text("Fn+Space kullanılamaz: Fn tuşu klavyenin kendi donanımında işlenir, Windows'a hiç ulaşmaz.",
             new Rect(b.X, y + 14, b.Width, 16), 11, Theme.Text3, FontWeight.Normal, font: Theme.TextFont);
+    }
+
+    void PageRadial(Rect b)
+    {
+        var st = Store.Current;
+        float y = b.Y;
+        Section(ref y, b, "AÇMA");
+        var c = Row(ref y, b, "Sağ tuşu basılı tut", "Kısa sağ tık normal çalışır; ~0,25 sn basılı tutunca daire açılır (tam ekran oyunda kapalı)", 54);
+        if (U.Toggle(Ui.Id("r.hold"), c, st.RadialRightHold)) { st.RadialRightHold = !st.RadialRightHold; Changed(); }
+        c = Row(ref y, b, "Bırakınca", st.RadialReleaseMode == 0 ? "Üzerinde olduğun öğe açılır; boşta bırakırsan kapanır" : "Daire açık kalır; öğeye tıkla, boş ekrana tıklayınca kapanır", 54);
+        int v = U.Segmented(Ui.Id("r.rel"), c, new[] { "Üzerindekini aç", "Açık kalsın" }, st.RadialReleaseMode);
+        if (v != st.RadialReleaseMode) { st.RadialReleaseMode = v; Changed(); }
+        c = Row(ref y, b, "Kısayol", I.RadialHotkeyOk ? "Klavyeden de açılır" : "⚠ Bu kısayol başka uygulamada kullanımda", 54);
+        v = U.Segmented(Ui.Id("r.hk"), c, new[] { "Alt+Q", "Ctrl+Alt+Q", "Kapalı" }, st.RadialHotkey);
+        if (v != st.RadialHotkey) { st.RadialHotkey = v; Changed(); }
+        c = Row(ref y, b, "Gezgin sağ tık menüsü", "\"Ada dairesine ekle\" ve \"Ada Dock'a sabitle\" (Diğer seçenekleri göster altında)", 54);
+        if (U.Toggle(Ui.Id("r.shell"), c, st.ShellPinMenu)) { st.ShellPinMenu = !st.ShellPinMenu; Changed(); }
+
+        Section(ref y, b, $"ÖĞELER ({st.RadialApps.Count}/12)");
+        var list = st.RadialApps;
+        if (list.Count == 0)
+        {
+            G.Text("Henüz öğe yok. Aşağıdan ekle, daire açıkken üzerine sürükle ya da Gezgin'de sağ tık → Ada dairesine ekle.",
+                new Rect(b.X, y, b.Width, 36), 11.5f, Theme.Text3, FontWeight.Normal, font: Theme.TextFont, wrap: true);
+            y += 40;
+        }
+        for (int i = 0; i < list.Count; i++)
+        {
+            var app = list[i];
+            var r = new Rect(b.X, y, b.Width, 42);
+            float hv = U.Anim(Ui.Id("r.row", app.Path.GetHashCode()), U.Hit(r) ? 1 : 0);
+            G.FillRound(r, 12, Theme.Rgb(0xFFFFFF, 0.03f + 0.03f * hv));
+            var bmp = I.Apps.Icon(app.Path, 32);
+            var ir = new Rect(r.X + 12, r.CenterY - 13, 26, 26);
+            if (bmp != null) G.Bitmap(bmp, ir); else { G.FillRound(ir, 7, Theme.SurfaceHi); G.Icon(Glyph.Apps, new Vector2(ir.CenterX, ir.CenterY), 11, Theme.Text); }
+            G.Text($"{i + 1}.  {app.Name}", new Rect(r.X + 50, r.Y, r.Width - 220, r.Height), 13, Theme.Text, FontWeight.SemiBold);
+            if (i > 0 && U.IconButton(Ui.Id("r.up", i), new Vector2(r.Right - 100, r.CenterY), 13, "", 10, Theme.Text2))
+            { (list[i - 1], list[i]) = (list[i], list[i - 1]); Changed(); }
+            if (i < list.Count - 1 && U.IconButton(Ui.Id("r.dn", i), new Vector2(r.Right - 70, r.CenterY), 13, "", 10, Theme.Text2))
+            { (list[i + 1], list[i]) = (list[i], list[i + 1]); Changed(); }
+            if (U.IconButton(Ui.Id("r.del", i), new Vector2(r.Right - 30, r.CenterY), 13, "", 10, Theme.Red))
+            { list.RemoveAt(i); Changed(); break; }
+            y += 48;
+        }
+        if (list.Count < 12)
+        {
+            if (U.Pill(Ui.Id("r.add"), new Rect(b.X, y + 4, 170, 32), "Uygulama ekle…", Theme.Accent, Theme.TileOnText, Glyph.Add))
+                Dispatcher.Post(() => { var p = AppsService.PickFile(Hwnd, "Daireye eklenecek uygulamayı seç"); if (p != null) I.AddToRadial(p, toast: false); });
+            if (U.Pill(Ui.Id("r.adddock"), new Rect(b.X + 182, y + 4, 200, 32), "Dock'takileri kopyala", Theme.Surface, Theme.Text))
+            {
+                foreach (var a in Store.Current.Apps) I.AddToRadial(a.Path, toast: false, name: a.Name);
+                Changed();
+            }
+            y += 44;
+        }
+        _lastY = MathF.Max(_lastY, y);
     }
 
     void PageTabs(Rect b)

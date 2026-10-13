@@ -86,7 +86,7 @@ public sealed unsafe class Island
     bool _startupDone;
 
     const int T_TICK = 1, T_COLLAPSE = 2, T_EQ = 3, T_BLINK = 4, T_LIVE = 5, T_HOVER = 6, T_PROX = 8;
-    const int HOTKEY_ID = 7, SEARCH_HOTKEY_ID = 9, RADIAL_HOTKEY_ID = 10;
+    const int HOTKEY_ID = 7, SEARCH_HOTKEY_ID = 9, RADIAL_HOTKEY_ID = 10, AI_HOTKEY_ID = 11;
     const uint WM_QUIT = 0x12, WM_SETCURSOR = 0x20;
     /// <summary>Başka bir Ada süreci (Başlat menüsü → "Ada Ayarları") bu mesajla ayarları açtırır.</summary>
     public const uint WM_OPEN_SETTINGS = Win32.WM_APP + 2;
@@ -95,15 +95,19 @@ public sealed unsafe class Island
     public SpotlightWindow? Spotlight;
     public DockWindow? Dock;
     public RadialWindow? Radial;
+    public AiWindow? AiWin;
+    public readonly Ada.Services.Ai.AiService Ai = new();
+    public bool IslandOff => !Store.Current.IslandEnabled;
 
-    bool SurfacesAnimating() => Settings?.Animating == true || Spotlight?.Animating == true || Dock?.Animating == true || Radial?.Animating == true;
-    void FrameSurfaces() { Settings?.FrameIfNeeded(); Spotlight?.FrameIfNeeded(); Dock?.FrameIfNeeded(); Radial?.FrameIfNeeded(); }
-    void InvalidateSurfaces() { Settings?.Invalidate(); Spotlight?.Invalidate(); Dock?.Invalidate(); Radial?.Invalidate(); }
+    bool SurfacesAnimating() => Settings?.Animating == true || Spotlight?.Animating == true || Dock?.Animating == true || Radial?.Animating == true || AiWin?.Animating == true;
+    void FrameSurfaces() { Settings?.FrameIfNeeded(); Spotlight?.FrameIfNeeded(); Dock?.FrameIfNeeded(); Radial?.FrameIfNeeded(); AiWin?.FrameIfNeeded(); }
+    void InvalidateSurfaces() { Settings?.Invalidate(); Spotlight?.Invalidate(); Dock?.Invalidate(); Radial?.Invalidate(); AiWin?.Invalidate(); }
     ISurface? SurfaceFor(IntPtr h) =>
         Settings != null && h == Settings.Hwnd ? Settings :
         Spotlight != null && h == Spotlight.Hwnd ? Spotlight :
         Dock != null && h == Dock.Hwnd ? Dock :
-        Radial != null && h == Radial.Hwnd ? Radial : null;
+        Radial != null && h == Radial.Hwnd ? Radial :
+        AiWin != null && h == AiWin.Hwnd ? AiWin : null;
     public IntPtr AppIconLarge, AppIconSmall;
 
     public Island()
@@ -115,8 +119,9 @@ public sealed unsafe class Island
         Panels = new Panel[]
         {
             new ControlsPanel(this), new TodayPanel(this), new SystemPanel(this), new ClipboardPanel(this),
-            new AppsPanel(this), new WallpaperPanel(this), new PowerPanel(this)
+            new AppsPanel(this), new WallpaperPanel(this), new PowerPanel(this), new AiPanel(this)
         };
+        Ai.Changed += () => { _dirty = true; Settings?.Invalidate(); };
     }
 
     // ================= pencere =================
@@ -163,9 +168,10 @@ public sealed unsafe class Island
 
         Frame();
         if (SnapMode) return;
-        Win32.ShowWindow(Hwnd, Win32.SW_SHOWNOACTIVATE);
-        _shown = true;
+        if (Store.Current.IslandEnabled) { Win32.ShowWindow(Hwnd, Win32.SW_SHOWNOACTIVATE); _shown = true; }
         Shell.EnsureStartMenu();
+        // ASUS pil şarj sınırı yeniden başlatınca sıfırlanır → kullanıcının seçimini yeniden uygula
+        if (Store.Current.ChargeLimit is 60 or 80 && AsusAcpi.Available) AsusAcpi.Set(AsusAcpi.BatteryLimit, Store.Current.ChargeLimit);
         Shell.EnsureShellMenu(Store.Current.ShellPinMenu);
     }
 
@@ -180,6 +186,26 @@ public sealed unsafe class Island
     public bool HotkeyOk { get; private set; } = true;
     public bool SearchHotkeyOk { get; private set; } = true;
     public bool RadialHotkeyOk { get; private set; } = true;
+    public bool AiHotkeyOk { get; private set; } = true;
+
+    /// <summary>Üst ada açık/kapalı: kapalıysa hap gizlenir ama pencere yaşar (kısayollar, yapay zeka, dock çalışmaya devam).</summary>
+    void UpdateIslandVisible()
+    {
+        if (SnapMode) return;
+        bool off = !Store.Current.IslandEnabled;
+        if (off)
+        {
+            if (Mode == Mode.Expanded) Collapse();
+            Mode = Mode.Collapsed;
+            if (_shown) { Win32.ShowWindow(Hwnd, Win32.SW_HIDE); _shown = false; }
+            Win32.KillTimer(Hwnd, T_EQ);
+        }
+        else if (!_shown && !_hidden)
+        {
+            Win32.ShowWindow(Hwnd, Win32.SW_SHOWNOACTIVATE); _shown = true;
+            _dirty = true; _animating = true;
+        }
+    }
 
     /// <summary>Ayarlar değişince çağrılır: tema, kısayol, yeniden çizim, kayıt.</summary>
     public void ApplySettings(bool save = false)
@@ -207,12 +233,30 @@ public sealed unsafe class Island
             if (s.SearchHotkey < 2)
                 SearchHotkeyOk = Win32.RegisterHotKey(Hwnd, SEARCH_HOTKEY_ID, (s.SearchHotkey == 0 ? Win32.MOD_CONTROL : Win32.MOD_ALT) | Win32.MOD_NOREPEAT, 0x20);
 
-            // Dairesel menü kısayolu (Alt+Q / Ctrl+Alt+Q)
+            // İmleç menüsü (daire) — bağımsız ana özellik
+            bool radialOn = s.RadialEnabled;
+            MouseHook.CanOpen = () => radialOn && Store.Current.RadialRightHold && !_hidden && Radial?.IsOpen != true && !ForegroundFullscreen();
+            MouseHook.RadialOpenAndOutside = p => Radial?.IsOpen == true && !Radial.Contains(p);
+            if (radialOn && s.RadialRightHold) MouseHook.Install(Hwnd); else MouseHook.Uninstall();
             Win32.UnregisterHotKey(Hwnd, RADIAL_HOTKEY_ID);
             RadialHotkeyOk = true;
-            if (s.RadialHotkey < 2)
+            if (radialOn && s.RadialHotkey < 2)
                 RadialHotkeyOk = Win32.RegisterHotKey(Hwnd, RADIAL_HOTKEY_ID, (s.RadialHotkey == 0 ? Win32.MOD_ALT : Win32.MOD_ALT | Win32.MOD_CONTROL) | Win32.MOD_NOREPEAT, 0x51);
+            if (!radialOn && Radial != null) { Radial.Close(); }
+
+            // Yapay zeka penceresi kısayolu (Ctrl+Shift+Space / Ctrl+Alt+A) — bağımsız ana özellik
+            Win32.UnregisterHotKey(Hwnd, AI_HOTKEY_ID);
+            AiHotkeyOk = true;
+            if (s.AiEnabled && s.AiHotkey < 2)
+                AiHotkeyOk = Win32.RegisterHotKey(Hwnd, AI_HOTKEY_ID,
+                    (s.AiHotkey == 0 ? Win32.MOD_CONTROL | 0x4u : Win32.MOD_CONTROL | Win32.MOD_ALT) | Win32.MOD_NOREPEAT,
+                    (uint)(s.AiHotkey == 0 ? 0x20 : 0x41)); // Space : A
+            if (!s.AiEnabled && AiWin != null) { AiWin.Close(); AiWin = null; }
+
             Shell.EnsureShellMenu(s.ShellPinMenu);
+
+            // Üst ada — bağımsız ana özellik
+            UpdateIslandVisible();
 
             // Dock
             if (s.DockEnabled) { Dock ??= new DockWindow(this); Dock.ApplyLayoutSettings(); }
@@ -238,6 +282,18 @@ public sealed unsafe class Island
     }
 
     public bool FullscreenHidden => _hidden;
+
+    /// <summary>Ön plandaki pencere tam ekran mı (oyun vb.) — sağ tık kancası o sırada karışmaz.</summary>
+    bool ForegroundFullscreen()
+    {
+        var fg = Win32.GetForegroundWindow();
+        if (fg == IntPtr.Zero || SurfaceFor(fg) != null || fg == Hwnd || fg == Win32.GetShellWindow()) return false;
+        var cls = Win32.ClassName(fg);
+        if (cls is "WorkerW" or "Progman") return false;
+        if (!Win32.GetWindowRect(fg, out var r)) return false;
+        bool covers = r.Left <= _mon.Left && r.Top <= _mon.Top && r.Right >= _mon.Right && r.Bottom >= _mon.Bottom;
+        return covers && (Win32.GetWindowLongW(fg, -16) & 0xC00000) != 0xC00000;
+    }
 
     /// <summary>Dairesel menüye ekle (Gezgin sağ tık, sürükle-bırak, Dock menüsü, ayarlar).</summary>
     public void AddToRadial(string path, bool toast = true, string? name = null)
@@ -279,6 +335,22 @@ public sealed unsafe class Island
         Radial.Toggle();
     }
 
+    public void ToggleAi()
+    {
+        if (SnapMode || !Store.Current.AiEnabled) return;
+        if (Store.Current.IslandEnabled && Mode != Mode.Expanded && !_hidden)
+        {
+            // ada açıksa yapay zeka sekmesini aç
+            var vis = Store.Current.VisibleTabs();
+            if (vis.Contains(7)) { Expand(7); BeginKeyboard(); return; }
+        }
+        Collapse();
+        AiWin ??= new AiWindow(this);
+        AiWin.Toggle();
+    }
+
+    public void AiWindowClosed() => AiWin = null;
+
     public void ToggleSpotlight()
     {
         if (SnapMode) return;
@@ -290,6 +362,7 @@ public sealed unsafe class Island
     /// <summary>Çıkışta: Dock ekran alanını bırak, görev çubuğunu geri getir.</summary>
     public void Shutdown()
     {
+        MouseHook.Uninstall();
         Dock?.Shutdown(); Dock = null;
         Taskbar.SetHidden(false);
     }
@@ -360,6 +433,15 @@ public sealed unsafe class Island
         dock.SnapRender(Path.Combine(dir, "7-dock.png"), null);
         dock.SnapRender(Path.Combine(dir, "7-dock-buyutme.png"), -60);
         dock.SnapRender(Path.Combine(dir, "7-dock-onizleme.png"), 298, 400);
+        // dairesel menü (örnek öğeler: Dock'takiler)
+        foreach (var a in Store.Current.Apps.Take(8)) AddToRadial(a.Path, toast: false, name: a.Name);
+        var rad = new RadialWindow(this);
+        rad.SnapRender(Path.Combine(dir, "9-daire.png"), 2);
+        // güç alt sekmeleri
+        for (int s = 0; s < 4; s++) { Expand(6); ((PowerPanel)Panels[6]).SetSub(s); Pump(s == 1 ? 3.0 : 0.6); Shot($"10-guc{s}"); }
+        // Wi-Fi listesi
+        Expand(0); ((ControlsPanel)Panels[0]).SnapOpenList(1); Pump(4.0); Shot("11-wifi", 140);
+        Collapse();
         var sp = new SpotlightWindow(this);
         Pump(1.5);
         sp.SnapRender("vis", Path.Combine(dir, "8-spotlight-uygulama.png"));
@@ -485,6 +567,7 @@ public sealed unsafe class Island
             case Win32.WM_HOTKEY:
                 if ((int)w == SEARCH_HOTKEY_ID) { ToggleSpotlight(); return 0; }
                 if ((int)w == RADIAL_HOTKEY_ID) { ToggleRadial(); return 0; }
+                if ((int)w == AI_HOTKEY_ID) { ToggleAi(); return 0; }
                 if (Mode == Mode.Expanded) Collapse();
                 else { Expand(Tab); BeginKeyboard(); }
                 return 0;
@@ -526,6 +609,15 @@ public sealed unsafe class Island
                 }
                 return 1;
             }
+            case MouseHook.WM_HOOK:
+                switch ((int)w)
+                {
+                    case 1: MouseHook.Replay(true, false); break; // sürükleme başladı: basışı geri ver
+                    case 2: MouseHook.Replay(true, true); break;  // kısa sağ tık: aynen geri gönder
+                    case 3: Radial?.Released(); break;
+                    case 4: Radial?.Close(); break;
+                }
+                return 0;
             case WM_OPEN_SETTINGS:
                 OpenSettings();
                 return 0;
@@ -988,6 +1080,7 @@ public sealed unsafe class Island
     void Reveal()
     {
         _awayTicks = 0;
+        if (!Store.Current.IslandEnabled) return;
         if (!_autoHidden) return;
         _autoHidden = false;
         if (!_shown && !SnapMode) { Win32.ShowWindow(Hwnd, Win32.SW_SHOWNOACTIVATE); _shown = true; }
@@ -1088,7 +1181,7 @@ public sealed unsafe class Island
 
     void ShowLive(LiveInfo info)
     {
-        if (_hidden) return;
+        if (_hidden || !Store.Current.IslandEnabled) return;
         if (Mode == Mode.Expanded) { if (!info.IsMedia && info.TabOnClick == 1) _pendingLive = info; return; }
         Reveal(); // bildirimler gizli moddayken de görünür
         _live = info;
@@ -1142,6 +1235,12 @@ public sealed unsafe class Island
 
     void OnTimer(int id)
     {
+        if (id == 8801)
+        {
+            Win32.KillTimer(Hwnd, 8801);
+            if (MouseHook.BeginHold()) { Collapse(); Radial ??= new RadialWindow(this); Radial.Open(MouseHook.DownPoint, true); }
+            return;
+        }
         switch (id)
         {
             case T_TICK: Tick(); break;
@@ -1224,6 +1323,7 @@ public sealed unsafe class Island
 
     void CheckFullscreen()
     {
+        if (!Store.Current.IslandEnabled) return;
         bool fs = false;
         if (Win32.SHQueryUserNotificationState(out var st) == 0 && st is 3 or 4) fs = true; // D3D tam ekran / sunum
         var fg = Win32.GetForegroundWindow();

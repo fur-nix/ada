@@ -203,9 +203,9 @@ public class StoreTests
     [Fact]
     public void NormalizeRepairsTabsAndRanges()
     {
-        var s = new State { Version = 2, TabOrder = new() { 3, 3, 9, 1 }, HiddenTabs = new() { 0, 1, 2, 3, 4, 5, 6 }, Size = 7, Roundness = 0, Hotkey = -2 };
+        var s = new State { Version = 3, TabOrder = new() { 3, 3, 9, 1 }, HiddenTabs = new() { 0, 1, 2, 3, 4, 5, 6, 7 }, Size = 7, Roundness = 0, Hotkey = -2 };
         s.Normalize();
-        Assert.Equal(new[] { 3, 1, 0, 2, 4, 5, 6 }, s.TabOrder);
+        Assert.Equal(new[] { 3, 1, 0, 2, 4, 5, 6, 7 }, s.TabOrder);
         Assert.Empty(s.HiddenTabs);           // hepsi gizlenemez
         Assert.Equal(2, s.Size);
         Assert.Equal(0.4f, s.Roundness);
@@ -235,12 +235,13 @@ public class StoreTests
         var path = Path.Combine(Path.GetTempPath(), "ada-old-" + Guid.NewGuid() + ".json");
         File.WriteAllText(path, "{\"Todos\":[{\"Text\":\"eski\"}],\"Apps\":[],\"Notch\":false,\"TabOrder\":[5,4,3,2,1,0]}");
         var s = Store.Load(path);
-        // v1 dosyası Hitodama düzenine taşınır, kullanıcı verisi korunur
+        // v1 dosyası güncel düzene taşınır, kullanıcı verisi korunur
         Assert.True(s.Notch);
-        Assert.Equal(2, s.Version);
+        Assert.Equal(3, s.Version);
         Assert.Equal("eski", s.Todos[0].Text);
         Assert.Equal(Slot.Clock, s.IdleCenter);
-        Assert.Equal(new[] { 0, 1, 2, 3, 4, 5, 6 }, s.TabOrder);
+        Assert.Equal(8, s.TabOrder.Count);
+        Assert.Contains(7, s.TabOrder);
         File.Delete(path);
     }
 

@@ -678,15 +678,36 @@ public sealed unsafe class DockWindow : ISurface
         Store.Save(); Refresh();
     }
 
+    /// <summary>
+    /// Premium "Uygulamalar" ikonu: koyu cam kare (squircle), içinde 3×3 renkli uygulama karosu, üst parlama ve iç kenar.
+    /// </summary>
     void DrawLauncher(Rect r)
     {
-        G.VGradientRound(r, r.Width * 0.24f, Theme.Rgb(0x5B6CFF), Theme.Rgb(0x8E54E9));
-        float c = r.Width / 7f;
+        float rad = r.Width * 0.235f;
+        // gövde: derin gece mavisi → siyah, üstte ince parlama
+        G.VGradientRound(r, rad, Theme.Rgb(0x2C3142), Theme.Rgb(0x0D0F15));
+        G.Glow(new Vector2(r.CenterX, r.Y + r.Height * 0.15f), r.Width * 0.75f, r.Height * 0.55f, Theme.Rgb(0x7C8CFF, 0.35f), r, rad);
+        // 3×3 karo: her biri kendi gradyanıyla (uygulama simgeleri gibi)
+        uint[,] cols =
+        {
+            { 0x5AC8FA, 0x0A84FF }, { 0xBF5AF2, 0x7D3CFF }, { 0xFF6482, 0xFF2D55 },
+            { 0x64D2FF, 0x30B0C7 }, { 0xFFD60A, 0xFF9F0A }, { 0x32D74B, 0x248A3D },
+            { 0xFF9F0A, 0xFF453A }, { 0x5E5CE6, 0x3634A3 }, { 0x66D4CF, 0x30A69B },
+        };
+        float pad = r.Width * 0.18f, gap = r.Width * 0.065f;
+        float cell = (r.Width - pad * 2 - gap * 2) / 3;
         for (int yy = 0; yy < 3; yy++)
         for (int xx = 0; xx < 3; xx++)
-            G.FillRound(new Rect(r.X + c * (1 + xx * 2) - c * 0.5f + c * 0.5f, r.Y + c * (1 + yy * 2) - c * 0.5f + c * 0.5f, c, c), c * 0.3f, Theme.Rgb(0xFFFFFF, 0.92f));
+        {
+            int i = yy * 3 + xx;
+            var cr = new Rect(r.X + pad + xx * (cell + gap), r.Y + pad + yy * (cell + gap), cell, cell);
+            G.VGradientRound(cr, cell * 0.3f, Theme.Rgb(cols[i, 0]), Theme.Rgb(cols[i, 1]));
+            G.VGradientRound(new Rect(cr.X, cr.Y, cr.Width, cr.Height * 0.5f), cell * 0.3f, Theme.Rgb(0xFFFFFF, 0.35f), Theme.Rgb(0xFFFFFF, 0f));
+        }
+        // cam kenar + üst yansıma çizgisi
+        G.StrokeRound(new Rect(r.X + 0.5f, r.Y + 0.5f, r.Width - 1, r.Height - 1), rad, Theme.Rgb(0xFFFFFF, 0.22f), 1);
+        G.VGradientRound(new Rect(r.X + 1, r.Y + 1, r.Width - 2, r.Height * 0.42f), rad, Theme.Rgb(0xFFFFFF, 0.10f), Theme.Rgb(0xFFFFFF, 0f));
     }
-
     void Activate(Item it)
     {
         if (it.Launcher) { Dispatcher.Post(() => I.ToggleSpotlight()); return; }

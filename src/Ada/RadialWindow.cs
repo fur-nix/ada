@@ -56,18 +56,36 @@ public sealed unsafe class RadialWindow : ISurface
     }
 
     public bool IsOpen => _open;
+
+    /// <summary>--snap: ekranın ortasında açık hali (isteğe bağlı bir dilim vurgulu) PNG'ye çizer.</summary>
+    public void SnapRender(string path, int hoverIndex)
+    {
+        _apps = Store.Current.RadialApps.Take((int)MaxItems).ToList();
+        _open = true; _shown = true; _scale.Snap(1); _alpha.Value = _alpha.Target = 1; _openTime = U.Time - 5;
+        int n = Math.Max(1, _apps.Count);
+        float ang = (hoverIndex * 360f / n - 90) * MathF.PI / 180;
+        U.Inside = hoverIndex >= 0;
+        U.Mouse = new Vector2(S / 2 + MathF.Cos(ang) * IconR, S / 2 + MathF.Sin(ang) * IconR);
+        for (int i = 0; i < 60; i++) Frame();
+        G.SavePng(path, _pw, _pw);
+        _open = false; _shown = false;
+    }
     public void Invalidate() => _dirty = true;
     public void FrameIfNeeded() { if (_shown && (_dirty || Animating)) Frame(); }
 
     public void Toggle() { if (_open) Close(); else Open(); }
 
-    public void Open()
+    public void Open() { Win32.GetCursorPos(out var p); Open(p, false); }
+
+    /// <summary>hold: sağ tuş hâlâ basılı (imleç takip edilir, bırakınca seçilir/kapanır).</summary>
+    public void Open(POINT p, bool hold)
     {
+        _hold = hold;
         _apps = Store.Current.RadialApps.Take((int)MaxItems).ToList();
-        Win32.GetCursorPos(out var p);
         var mon = I.MonitorRect;
         int x = Math.Clamp(p.X - _pw / 2, mon.Left, mon.Right - _pw);
         int y = Math.Clamp(p.Y - _pw / 2, mon.Top, mon.Bottom - _pw);
+        _wx = x; _wy = y;
         Win32.SetWindowPos(Hwnd, Win32.HWND_TOPMOST, x, y, _pw, _pw, Win32.SWP_NOACTIVATE);
         foreach (var a in _apps) I.Apps.Icon(a.Path, IconSize * 1.2f); // ikonları önceden hazırla
         _open = true;
@@ -79,9 +97,42 @@ public sealed unsafe class RadialWindow : ISurface
         _dirty = true; Animating = true;
     }
 
+    bool _hold;
+    int _wx, _wy;
+    int _lastHover = -1;
+    bool _lastCenter;
+
+    /// <summary>Ekran noktası halkanın üstünde mi?</summary>
+    public bool Contains(POINT p)
+    {
+        float cx = _wx + _pw / 2f, cy = _wy + _pw / 2f;
+        float dx = p.X - cx, dy = p.Y - cy;
+        return dx * dx + dy * dy <= MathF.Pow((Outer + 12) * I.Scale, 2);
+    }
+
+    /// <summary>Basılı tutulan sağ tuş bırakıldı.</summary>
+    public void Released()
+    {
+        if (!_open || !_hold) return;
+        _hold = false;
+        if (Store.Current.RadialReleaseMode == 1) { _dirty = true; return; } // açık kalsın: tıkla seç
+        if (_lastCenter) { Close(); Dispatcher.Post(I.ToggleSpotlight); }
+        else if (_lastHover >= 0 && _lastHover < _apps.Count) Launch(_apps[_lastHover]);
+        else Close();
+    }
+
+    void Launch(PinnedApp app)
+    {
+        Close();
+        var c2 = Store.Current.LaunchCounts;
+        c2[app.Path] = (c2.TryGetValue(app.Path, out var k) ? k : 0) + 1;
+        Dispatcher.Post(() => AppsService.Launch(app));
+    }
+
     public void Close()
     {
         if (!_open) return;
+        _hold = false;
         _open = false;
         _scale.Target = 0.8f;
         _dirty = true; Animating = true;
@@ -129,6 +180,8 @@ public sealed unsafe class RadialWindow : ISurface
         if (!Animating) dt = 1 / 60f;
         _last = now;
         U.Dt = dt; U.Time += dt; U.NeedsFrame = false; U.WantHand = false;
+        // basılı tutarken pencere mesajı beklemeden imleci doğrudan izle
+        if (_hold && Win32.GetCursorPos(out var cp)) { U.Mouse = new Vector2((cp.X - _wx) / I.Scale, (cp.Y - _wy) / I.Scale); U.Inside = true; U.NeedsFrame = true; }
         _scale.Step(dt);
         _alpha.Target = _open ? 1 : 0; _alpha.Speed = _open ? 16 : 24; _alpha.Step(dt);
 
@@ -232,14 +285,7 @@ public sealed unsafe class RadialWindow : ISurface
         if (_open && U.Released)
         {
             if (centerHover) { Close(); Dispatcher.Post(I.ToggleSpotlight); }
-            else if (hover >= 0)
-            {
-                var app = _apps[hover];
-                Close();
-                var c2 = Store.Current.LaunchCounts;
-                c2[app.Path] = (c2.TryGetValue(app.Path, out var k) ? k : 0) + 1;
-                Dispatcher.Post(() => AppsService.Launch(app));
-            }
+            else if (hover >= 0) Launch(_apps[hover]);
             else if (dist > Outer + 40) Close();
         }
         // sağ tık bir öğede → daireden çıkar; boşlukta → kapat
@@ -256,5 +302,6 @@ public sealed unsafe class RadialWindow : ISurface
             else Close();
         }
         if (hover >= 0 || centerHover) U.WantHand = true;
+        _lastHover = hover; _lastCenter = centerHover;
     }
 }

@@ -95,6 +95,9 @@ public sealed class ControlsPanel : Panel
 
     public override void OnHide() { base.OnHide(); _sub = 0; _openNet = null; }
 
+    /// <summary>--snap testi.</summary>
+    public void SnapOpenList(int which) => OpenList(which);
+
     void OpenList(int which)
     {
         _sub = which; _openNet = null; _listScroll.Snap(0);
