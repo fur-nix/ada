@@ -681,32 +681,45 @@ public sealed unsafe class DockWindow : ISurface
     /// <summary>
     /// Premium "Uygulamalar" ikonu: koyu cam kare (squircle), içinde 3×3 renkli uygulama karosu, üst parlama ve iç kenar.
     /// </summary>
+    /// <summary>
+    /// Premium Launchpad ikonu: buzlu grafit squircle, yumuşak üst parlama ve ince kenar ışığı,
+    /// içinde 3×3 cam karo — renkli oyuncak yerine sade, cilalı, macOS hissi veren bir mücevher.
+    /// </summary>
     void DrawLauncher(Rect r)
     {
         float rad = r.Width * 0.235f;
-        // gövde: derin gece mavisi → siyah, üstte ince parlama
-        G.VGradientRound(r, rad, Theme.Rgb(0x2C3142), Theme.Rgb(0x0D0F15));
-        G.Glow(new Vector2(r.CenterX, r.Y + r.Height * 0.15f), r.Width * 0.75f, r.Height * 0.55f, Theme.Rgb(0x7C8CFF, 0.35f), r, rad);
-        // 3×3 karo: her biri kendi gradyanıyla (uygulama simgeleri gibi)
-        uint[,] cols =
+        var acc = Theme.Accent;
+        // gövde: koyu grafit, yukarıdan hafif aydınlanan dikey gradyan
+        G.VGradientRound(r, rad, Theme.Rgb(0x3A3F4C), Theme.Rgb(0x14161D));
+        // üstte geniş, yumuşak vurgu rengi ışıması (markayla uyumlu)
+        G.Glow(new Vector2(r.CenterX, r.Y + r.Height * 0.08f), r.Width * 0.7f, r.Height * 0.5f, acc.WithA(0.22f), r, rad);
+
+        // 3×3 cam karo: düşük doygunlukta pastel tonlar (neon değil), üstte cila, köşelerde yumuşak
+        // Apple sistem renklerinin soluk hâlleri; buzlu beyaza doğru karıştırılır → zarif, canlı ama oyuncak değil
+        uint[] hue =
         {
-            { 0x5AC8FA, 0x0A84FF }, { 0xBF5AF2, 0x7D3CFF }, { 0xFF6482, 0xFF2D55 },
-            { 0x64D2FF, 0x30B0C7 }, { 0xFFD60A, 0xFF9F0A }, { 0x32D74B, 0x248A3D },
-            { 0xFF9F0A, 0xFF453A }, { 0x5E5CE6, 0x3634A3 }, { 0x66D4CF, 0x30A69B },
+            0x5AC8FA, 0xBF5AF2, 0xFF6482,
+            0x64D2FF, 0xFFD60A, 0x32D74B,
+            0x5E5CE6, 0xFF9F0A, 0x66D4CF,
         };
-        float pad = r.Width * 0.18f, gap = r.Width * 0.065f;
+        float pad = r.Width * 0.205f, gap = r.Width * 0.075f;
         float cell = (r.Width - pad * 2 - gap * 2) / 3;
+        float crad = cell * 0.34f;
         for (int yy = 0; yy < 3; yy++)
         for (int xx = 0; xx < 3; xx++)
         {
             int i = yy * 3 + xx;
             var cr = new Rect(r.X + pad + xx * (cell + gap), r.Y + pad + yy * (cell + gap), cell, cell);
-            G.VGradientRound(cr, cell * 0.3f, Theme.Rgb(cols[i, 0]), Theme.Rgb(cols[i, 1]));
-            G.VGradientRound(new Rect(cr.X, cr.Y, cr.Width, cr.Height * 0.5f), cell * 0.3f, Theme.Rgb(0xFFFFFF, 0.35f), Theme.Rgb(0xFFFFFF, 0f));
+            float d = 1 - (MathF.Abs(xx - 1) + MathF.Abs(yy - 1)) * 0.1f;
+            // renge %28 pay, gerisi buzlu beyaz → pastel
+            var tint = Theme.Mix(Theme.Rgb(0xFFFFFF, 0.14f), Theme.Rgb(hue[i], 0.5f), 0.34f * d);
+            G.VGradientRound(cr, crad, tint, Theme.Mix(Theme.Rgb(hue[i], 0.1f), Theme.Rgb(0xFFFFFF, 0.04f), 0.5f));
+            G.VGradientRound(new Rect(cr.X, cr.Y, cr.Width, cr.Height * 0.52f), crad, Theme.Rgb(0xFFFFFF, 0.3f * d), Theme.Rgb(0xFFFFFF, 0f));
+            G.StrokeRound(cr, crad, Theme.Rgb(0xFFFFFF, 0.12f), 0.8f);
         }
-        // cam kenar + üst yansıma çizgisi
-        G.StrokeRound(new Rect(r.X + 0.5f, r.Y + 0.5f, r.Width - 1, r.Height - 1), rad, Theme.Rgb(0xFFFFFF, 0.22f), 1);
-        G.VGradientRound(new Rect(r.X + 1, r.Y + 1, r.Width - 2, r.Height * 0.42f), rad, Theme.Rgb(0xFFFFFF, 0.10f), Theme.Rgb(0xFFFFFF, 0f));
+        // üst yansıma bandı + ince cam kenar
+        G.VGradientRound(new Rect(r.X + 1, r.Y + 1, r.Width - 2, r.Height * 0.4f), rad, Theme.Rgb(0xFFFFFF, 0.12f), Theme.Rgb(0xFFFFFF, 0f));
+        G.StrokeRound(new Rect(r.X + 0.5f, r.Y + 0.5f, r.Width - 1, r.Height - 1), rad, Theme.Rgb(0xFFFFFF, 0.2f), 1);
     }
     void Activate(Item it)
     {

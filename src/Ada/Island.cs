@@ -435,6 +435,7 @@ public sealed unsafe class Island
         var dock = new DockWindow(this);
         dock.SnapRender(Path.Combine(dir, "7-dock.png"), null);
         dock.SnapRender(Path.Combine(dir, "7-dock-buyutme.png"), -60);
+        dock.SnapRender(Path.Combine(dir, "7-dock-launcher.png"), -300);
         dock.SnapRender(Path.Combine(dir, "7-dock-onizleme.png"), 298, 400);
         // dairesel menü (örnek öğeler: Dock'takiler)
         foreach (var a in Store.Current.Apps.Take(8)) AddToRadial(a.Path, toast: false, name: a.Name);
