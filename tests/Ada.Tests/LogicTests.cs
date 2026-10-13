@@ -86,6 +86,31 @@ public class CalcTests
     public void FormatsTurkish() => Assert.Equal("1.234,5", Calc.Format(1234.5));
 }
 
+public class LaunchQueryTests
+{
+    [Theory]
+    [InlineData("g kedi videoları", LaunchQuery.Kind.Google, "kedi videoları")]
+    [InlineData("yt lofi", LaunchQuery.Kind.YouTube, "lofi")]
+    [InlineData("w Atatürk", LaunchQuery.Kind.Wikipedia, "Atatürk")]
+    [InlineData("> ipconfig /all", LaunchQuery.Kind.Command, "ipconfig /all")]
+    [InlineData("github.com/ada", LaunchQuery.Kind.Url, "https://github.com/ada")]
+    [InlineData("https://claude.ai", LaunchQuery.Kind.Url, "https://claude.ai")]
+    [InlineData("www.trendyol.com", LaunchQuery.Kind.Url, "https://www.trendyol.com")]
+    [InlineData("chrome", LaunchQuery.Kind.None, "chrome")]
+    [InlineData("g", LaunchQuery.Kind.None, "g")]
+    [InlineData("rapor.docx", LaunchQuery.Kind.None, "rapor.docx")]
+    public void Parses(string input, LaunchQuery.Kind kind, string arg)
+    {
+        var (k, a) = LaunchQuery.Parse(input);
+        Assert.Equal(kind, k);
+        Assert.Equal(arg, a);
+    }
+
+    [Fact]
+    public void BuildsSearchUrl() =>
+        Assert.Equal("https://www.youtube.com/results?search_query=lofi%20hip%20hop", LaunchQuery.UrlFor(LaunchQuery.Kind.YouTube, "lofi hip hop"));
+}
+
 public class SearchScoreTests
 {
     static readonly System.Globalization.CultureInfo Tr = System.Globalization.CultureInfo.GetCultureInfo("tr-TR");

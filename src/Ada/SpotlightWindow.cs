@@ -36,7 +36,7 @@ public sealed unsafe class SpotlightWindow : ISurface
     int _sel;
     int _pw, _ph;
 
-    sealed record Item(string Title, string Sub, string Kind, string? IconPath, string Glyph, Action Run);
+    sealed record Item(string Title, string Sub, string Kind, string? IconPath, string Glyph, Action Run, string? Key = null);
 
     public SpotlightWindow(Island island)
     {
@@ -107,16 +107,48 @@ public sealed unsafe class SpotlightWindow : ISurface
     }
 
     // ---------------- sonuçlar ----------------
+    static int Count(string key) => Store.Current.LaunchCounts.TryGetValue(key, out var n) ? n : 0;
+
+    Item AppItem(string name, string path, string sub) =>
+        new(name, sub, "Uygulama", path, Glyph.Apps, () => AppsService.Launch(new PinnedApp { Name = name, Path = path }), path);
+
+    static void Open(string target) => Win32.ShellExecuteW(IntPtr.Zero, "open", target, null, null, Win32.SW_SHOWNORMAL);
+
     void Rebuild()
     {
         var q = _box.Text.Trim();
         var items = new List<Item>();
         var tr = System.Globalization.CultureInfo.GetCultureInfo("tr-TR");
+        var counts = Store.Current.LaunchCounts;
         if (q.Length == 0)
         {
-            foreach (var a in Store.Current.Apps.Take(6))
-                items.Add(new Item(a.Name, "Sabitlenmiş", "Uygulama", a.Path, Glyph.Apps, () => AppsService.Launch(a)));
+            // Launchy gibi: en sık açtıkların; henüz yoksa sabitlenenler
+            foreach (var kv in counts.OrderByDescending(kv => kv.Value).Take(7))
+            {
+                var app = I.AppIndex.All.FirstOrDefault(a => a.Path.Equals(kv.Key, StringComparison.OrdinalIgnoreCase));
+                if (app != null) items.Add(AppItem(app.Name, app.Path, $"Sık kullanılan · {kv.Value} kez"));
+                else if (File.Exists(kv.Key) || Directory.Exists(kv.Key))
+                    items.Add(new Item(Path.GetFileName(kv.Key), $"Sık kullanılan · {kv.Value} kez", "Dosya", kv.Key, Glyph.Folder, () => Open(kv.Key), kv.Key));
+            }
+            if (items.Count == 0)
+                foreach (var a in Store.Current.Apps.Take(6))
+                    items.Add(new Item(a.Name, "Sabitlenmiş", "Uygulama", a.Path, Glyph.Apps, () => AppsService.Launch(a), a.Path));
             _items = items; Clamp(); return;
+        }
+
+        // önekler: g / yt / w / > / adres
+        var (kind, arg) = LaunchQuery.Parse(q);
+        switch (kind)
+        {
+            case LaunchQuery.Kind.Google: items.Add(new Item($"Google: {arg}", "Enter: tarayıcıda ara", "Web", null, "", () => Open(LaunchQuery.UrlFor(kind, arg)))); break;
+            case LaunchQuery.Kind.YouTube: items.Add(new Item($"YouTube: {arg}", "Enter: YouTube'da ara", "Web", null, "", () => Open(LaunchQuery.UrlFor(kind, arg)))); break;
+            case LaunchQuery.Kind.Wikipedia: items.Add(new Item($"Vikipedi: {arg}", "Enter: Vikipedi'de ara", "Web", null, "", () => Open(LaunchQuery.UrlFor(kind, arg)))); break;
+            case LaunchQuery.Kind.Url: items.Add(new Item(arg, "Enter: adresi aç", "Adres", null, "", () => Open(arg))); break;
+            case LaunchQuery.Kind.Command:
+                if (arg.Length > 0)
+                    items.Add(new Item($"Çalıştır: {arg}", "Komut istemi açılır ve komut çalışır", "Komut", null, "", () =>
+                        Win32.ShellExecuteW(IntPtr.Zero, "open", "cmd.exe", "/k " + arg, null, Win32.SW_SHOWNORMAL)));
+                _items = items; Clamp(); return;
         }
 
         if (Calc.TryEval(q, out var v))
@@ -128,8 +160,17 @@ public sealed unsafe class SpotlightWindow : ISurface
                 I.Toast("Kopyalandı", "= " + res, Glyph.Copy, Theme.Accent, 3);
             }));
         }
-        foreach (var e in AppIndex.Search(I.AppIndex.All, q, 6))
-            items.Add(new Item(e.Name, e.Kind, "Uygulama", e.Path, Glyph.Apps, () => AppsService.Launch(new PinnedApp { Name = e.Name, Path = e.Path })));
+
+        // uygulamalar: eşleşme puanı + kullanım sıklığı (Launchy'nin öğrenen sıralaması)
+        var apps = new List<(AppIndex.Entry e, float score)>();
+        foreach (var e in I.AppIndex.All)
+        {
+            int sc = AppIndex.Score(e.Name, q, tr);
+            if (sc > 0) apps.Add((e, sc * 10 + MathF.Min(Count(e.Path), 40) / 4f));
+        }
+        foreach (var (e, _) in apps.OrderByDescending(x => x.score).ThenBy(x => x.e.Name.Length).Take(6))
+            items.Add(AppItem(e.Name, e.Path, Count(e.Path) > 0 ? $"{e.Kind} · {Count(e.Path)} kez açıldı" : e.Kind));
+
         (string name, string glyph, Action run)[] actions =
         {
             ("Ada Ayarları", Glyph.Settings, () => I.OpenSettings()),
@@ -138,16 +179,16 @@ public sealed unsafe class SpotlightWindow : ISurface
             ("Windows Ayarları", Glyph.Settings, () => ControlsService.OpenSettings()),
             ("Pano geçmişi", Glyph.Clipboard, () => I.Expand(3)),
             ("Duvar kağıdı", Glyph.Theme, () => I.Expand(5)),
+            ("Dock ayarları", "", () => I.OpenSettings(SettingsWindow.DockPage)),
         };
         foreach (var (name, glyph, run) in actions)
             if (AppIndex.Score(name, q, tr) > 0) items.Add(new Item(name, "Ada eylemi", "Eylem", null, glyph, run));
         if (Store.Current.SearchFiles)
-            foreach (var f in I.Files.Search(q, 5))
-                items.Add(new Item(f.Name, f.Folder, Directory.Exists(f.Path) ? "Klasör" : "Dosya", f.Path, Glyph.Folder,
-                    () => Win32.ShellExecuteW(IntPtr.Zero, "open", f.Path, null, null, Win32.SW_SHOWNORMAL)));
-        if (Store.Current.SearchWeb)
-            items.Add(new Item($"“{q}” için web'de ara", "Varsayılan tarayıcı", "Web", null, "", () =>
-                Win32.ShellExecuteW(IntPtr.Zero, "open", "https://www.google.com/search?q=" + Uri.EscapeDataString(q), null, null, Win32.SW_SHOWNORMAL)));
+            foreach (var f in I.Files.Search(q, 12).OrderByDescending(f => Count(f.Path)).Take(5))
+                items.Add(new Item(f.Name, f.Folder, Directory.Exists(f.Path) ? "Klasör" : "Dosya", f.Path, Glyph.Folder, () => Open(f.Path), f.Path));
+        if (Store.Current.SearchWeb && kind == LaunchQuery.Kind.None)
+            items.Add(new Item($"“{q}” için web'de ara", "g, yt, w önekleriyle de arayabilirsin", "Web", null, "", () =>
+                Open(LaunchQuery.UrlFor(LaunchQuery.Kind.Google, q))));
         _items = items.Take((int)MaxRows).ToList();
         Clamp();
     }
@@ -158,10 +199,15 @@ public sealed unsafe class SpotlightWindow : ISurface
     {
         if (_sel >= _items.Count) return;
         var it = _items[_sel];
+        if (it.Key != null)
+        {
+            var c = Store.Current.LaunchCounts;
+            c[it.Key] = (c.TryGetValue(it.Key, out var n) ? n : 0) + 1;
+            Store.Save();
+        }
         Hide();
         Dispatcher.Post(it.Run);
     }
-
     // ---------------- mesajlar ----------------
     public IntPtr WndProc(IntPtr h, uint m, IntPtr w, IntPtr l)
     {
@@ -221,14 +267,18 @@ public sealed unsafe class SpotlightWindow : ISurface
         _height.Target = InputH + listH; _height.Step(dt);
         _selY.Target = _sel * RowH; _selY.Step(dt);
 
+        if (G.InDraw) { _dirty = true; return; }
         G.Begin(_pw, _ph);
         float a = Ease.OutCubic(_vis.Value);
-        G.Alpha = a;
-        // açılış: hafif büyüyerek ve aşağı kayarak gelir
-        G.PushTranslate(M, M - 10 * (1 - a), 0.96f + 0.04f * a, new Vector2(W / 2, 0));
-        Draw();
-        G.PopTransform();
-        G.End();
+        try
+        {
+            G.Alpha = a;
+            // açılış: hafif büyüyerek ve aşağı kayarak gelir
+            G.PushTranslate(M, M - 10 * (1 - a), 0.96f + 0.04f * a, new Vector2(W / 2, 0));
+            Draw();
+            G.PopTransform();
+        }
+        finally { G.End(); }
         G.PresentInPlace(Hwnd, _pw, _ph);
 
         Animating = U.NeedsFrame || !_vis.Settled || !_height.Settled || !_selY.Settled;
@@ -283,7 +333,7 @@ public sealed unsafe class SpotlightWindow : ISurface
             bool sel = i == _sel;
             var fg = sel ? Theme.TileOnText : Theme.Text;
             var ir = new Rect(r.X + 12, r.CenterY - 13, 26, 26);
-            var bmp = it.IconPath != null ? I.Apps.Icon(it.IconPath) : null;
+            var bmp = it.IconPath != null ? I.Apps.Icon(it.IconPath, 32) : null;
             if (bmp != null) G.Bitmap(bmp, ir);
             else { G.FillRound(ir, 7, sel ? Theme.Rgb(0x000000, 0.12f) : Theme.Rgb(0xFFFFFF, 0.08f)); G.Icon(it.Glyph, new Vector2(ir.CenterX, ir.CenterY), 12, fg); }
             G.Text(it.Title, new Rect(r.X + 50, r.Y + 3, r.Width - 190, 22), 14, fg, FontWeight.SemiBold);

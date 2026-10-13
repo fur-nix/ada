@@ -86,8 +86,16 @@ public sealed class Gfx : IDisposable
         _memDc = IntPtr.Zero;
     }
 
+    /// <summary>
+    /// Çizim sürüyor mu? Bazı COM çağrıları (ikon çıkarma vb.) beklerken mesaj pompalar; o sırada gelen mesajların
+    /// ikinci bir çizime başlamaması gerekir (D2DERR_WRONG_STATE çökmesi). Island bu bayrağa bakıp mesajları erteler.
+    /// </summary>
+    public bool InDraw { get; private set; }
+
     public void Begin(int pw, int ph)
     {
+        if (InDraw) throw new InvalidOperationException("İç içe çizim");
+        InDraw = true;
         EnsureSurface(pw, ph);
         _rt.BindDC(_memDc, new RawRect(0, 0, pw, ph));
         _rt.BeginDraw();
@@ -98,6 +106,7 @@ public sealed class Gfx : IDisposable
 
     public void End()
     {
+        InDraw = false;
         var r = _rt.EndDraw();
         if (r.Failure) Log.Info("EndDraw failed: " + r.Code);
     }
@@ -338,6 +347,112 @@ public sealed class Gfx : IDisposable
         _rt.FillRoundedRectangle(new RoundedRectangle(RF(dest), rad, rad), brush);
     }
 
+    /// <summary>Yuvarlak dikdörtgeni bitmap fırçasıyla doldurur (fırça dönüşümü ekran ↔ pencere eşlemesi içindir).</summary>
+    public void FillRoundBitmap(Rect r, float rad, ID2D1Bitmap bmp, Matrix3x2 brushTransform, float opacity = 1f)
+    {
+        using var brush = _rt.CreateBitmapBrush(bmp, new BitmapBrushProperties
+        {
+            ExtendModeX = ExtendMode.Clamp, ExtendModeY = ExtendMode.Clamp,
+            InterpolationMode = Vortice.Direct2D1.BitmapInterpolationMode.Linear
+        }, new BrushProperties { Opacity = opacity * Alpha, Transform = Matrix3x2.Identity });
+        brush.Transform = brushTransform;
+        rad = MathF.Min(rad, MathF.Min(r.Width, r.Height) / 2);
+        _rt.FillRoundedRectangle(new RoundedRectangle(RF(r), rad, rad), brush);
+    }
+
+    /// <summary>Tek radyal elips gölge (ikon altı) — katmanlı gölgeden çok daha ucuz.</summary>
+    public void SoftShadow(Vector2 center, float rx, float ry, float alpha)
+    {
+        using var stops = _rt.CreateGradientStopCollection(new[]
+        {
+            new GradientStop(0, new Color4(0, 0, 0, alpha * Alpha)), new GradientStop(1, new Color4(0, 0, 0, 0))
+        });
+        using var rg = _rt.CreateRadialGradientBrush(new RadialGradientBrushProperties { Center = center, RadiusX = rx, RadiusY = ry }, stops);
+        _rt.FillEllipse(new Ellipse(center, rx, ry), rg);
+    }
+
+    /// <summary>
+    /// Duvar kağıdının ekrana "doldur" yerleşimiyle küçültülmüş + kutu-bulanıklaştırılmış kopyası (buzlu cam için).
+    /// </summary>
+    public unsafe ID2D1Bitmap? BlurredWallpaper(string file, int monW, int monH, int downscale = 10)
+    {
+        try
+        {
+            using var dec = Wic.CreateDecoderFromFileName(file, System.IO.FileAccess.Read, DecodeOptions.CacheOnDemand);
+            using var frame = dec.GetFrame(0);
+            using var conv = Wic.CreateFormatConverter();
+            conv.Initialize(frame, Vortice.WIC.PixelFormat.Format32bppPBGRA, BitmapDitherType.None, null, 0, BitmapPaletteType.Custom);
+            var sz = conv.Size;
+            float k = MathF.Max(monW / (float)sz.Width, monH / (float)sz.Height);
+            uint cw = (uint)Math.Min(sz.Width, monW / k), ch = (uint)Math.Min(sz.Height, monH / k);
+            uint cx = (uint)((sz.Width - cw) / 2), cy = (uint)((sz.Height - ch) / 2);
+            using var crop = Wic.CreateBitmapFromSourceRect(conv, cx, cy, cw, ch);
+            int w = Math.Max(8, monW / downscale), h = Math.Max(8, monH / downscale);
+            using var scaler = Wic.CreateBitmapScaler();
+            scaler.Initialize(crop, (uint)w, (uint)h, Vortice.WIC.BitmapInterpolationMode.Fant);
+            var buf = new byte[w * h * 4];
+            scaler.CopyPixels((uint)(w * 4), buf);
+            for (int pass = 0; pass < 3; pass++) { BoxBlur(buf, w, h, 3, true); BoxBlur(buf, w, h, 3, false); }
+            using var wb = Wic.CreateBitmapFromMemory((uint)w, (uint)h, Vortice.WIC.PixelFormat.Format32bppPBGRA, buf, (uint)(w * 4));
+            return _rt.CreateBitmapFromWicBitmap(wb, null);
+        }
+        catch (Exception e) { Log.Error("BlurredWallpaper", e); return null; }
+    }
+
+    static void BoxBlur(byte[] p, int w, int h, int r, bool horizontal)
+    {
+        int len = horizontal ? w : h, lines = horizontal ? h : w;
+        var tmp = new int[len * 4];
+        for (int line = 0; line < lines; line++)
+        {
+            int Idx(int i) => horizontal ? (line * w + i) * 4 : (i * w + line) * 4;
+            for (int c = 0; c < 4; c++)
+            {
+                int sum = 0;
+                for (int i = -r; i <= r; i++) sum += p[Idx(Math.Clamp(i, 0, len - 1)) + c];
+                for (int i = 0; i < len; i++)
+                {
+                    tmp[i * 4 + c] = sum / (2 * r + 1);
+                    sum += p[Idx(Math.Min(len - 1, i + r + 1)) + c] - p[Idx(Math.Max(0, i - r)) + c];
+                }
+            }
+            for (int i = 0; i < len; i++)
+                for (int c = 0; c < 4; c++) p[Idx(i) + c] = (byte)tmp[i * 4 + c];
+        }
+    }
+
+    /// <summary>Pencerenin anlık görüntüsü (Dock önizlemesi). Simge durumundaki pencerelerde null.</summary>
+    public unsafe ID2D1Bitmap? CaptureWindow(IntPtr hwnd, int maxW)
+    {
+        if (Win32.IsIconic(hwnd) || !Win32.GetWindowRect(hwnd, out var rc)) return null;
+        int w = rc.Width, h = rc.Height;
+        if (w < 8 || h < 8 || w > 8000 || h > 8000) return null;
+        var screen = Win32.GetDC(IntPtr.Zero);
+        var dc = Win32.CreateCompatibleDC(screen);
+        Win32.ReleaseDC(IntPtr.Zero, screen);
+        var bmi = new BITMAPINFOHEADER { biSize = (uint)sizeof(BITMAPINFOHEADER), biWidth = w, biHeight = -h, biPlanes = 1, biBitCount = 32 };
+        var dib = Win32.CreateDIBSection(dc, ref bmi, 0, out var bits, IntPtr.Zero, 0);
+        var old = Win32.SelectObject(dc, dib);
+        try
+        {
+            if (!Win32.PrintWindow(hwnd, dc, 2)) return null; // PW_RENDERFULLCONTENT
+            using var wb = Wic.CreateBitmapFromMemory((uint)w, (uint)h, Vortice.WIC.PixelFormat.Format32bppBGR, (uint)(w * 4), (uint)(w * h * 4), bits);
+            float k = MathF.Min(1, maxW / (float)w);
+            using var scaler = Wic.CreateBitmapScaler();
+            scaler.Initialize(wb, (uint)Math.Max(1, w * k), (uint)Math.Max(1, h * k), Vortice.WIC.BitmapInterpolationMode.Fant);
+            using var conv = Wic.CreateFormatConverter();
+            conv.Initialize(scaler, Vortice.WIC.PixelFormat.Format32bppPBGRA, BitmapDitherType.None, null, 0, BitmapPaletteType.Custom);
+            return _rt.CreateBitmapFromWicBitmap(conv, null);
+        }
+        catch (Exception e) { Log.Error("CaptureWindow", e); return null; }
+        finally
+        {
+            Win32.SelectObject(dc, old);
+            Win32.DeleteObject(dib);
+            Win32.DeleteDC(dc);
+        }
+    }
+
     public void PushMatrix(Matrix3x2 m) { _xf.Push(_rt.Transform); _rt.Transform = m * _rt.Transform; }
 
     /// <summary>Kodlanmış görüntüyü (png/jpg) çözer, max boyuta küçültür, baskın rengi hesaplar.</summary>
@@ -354,11 +469,47 @@ public sealed class Gfx : IDisposable
         catch (Exception e) { Log.Error("LoadImage", e); return null; }
     }
 
-    public ID2D1Bitmap? FromHBitmap(IntPtr hbm, int maxPx)
+    /// <summary>
+    /// Kabuk ikonunu (HBITMAP) yüksek kaliteyle bitmap'e çevirir: pikselleri üstten-alta okur, alfanın ön-çarpımlı
+    /// olup olmadığını piksellerden tespit eder (yanlış varsayım = tırtıklı/parlak kenar), Fant ile hedef boyuta küçültür.
+    /// </summary>
+    public unsafe ID2D1Bitmap? FromHBitmap(IntPtr hbm, int maxPx)
     {
         try
         {
-            using var src = Wic.CreateBitmapFromHBITMAP(hbm, IntPtr.Zero, BitmapAlphaChannelOption.UsePremultipliedAlpha);
+            if (Win32.GetObjectW(hbm, sizeof(BITMAP), out var bm) == 0 || bm.bmWidth <= 0) return null;
+            int w = bm.bmWidth, h = Math.Abs(bm.bmHeight);
+            var bmi = new BITMAPINFOHEADER { biSize = (uint)sizeof(BITMAPINFOHEADER), biWidth = w, biHeight = -h, biPlanes = 1, biBitCount = 32 };
+            var buf = new byte[w * h * 4];
+            var dc = Win32.GetDC(IntPtr.Zero);
+            int lines;
+            fixed (byte* p = buf) lines = Win32.GetDIBits(dc, hbm, 0, (uint)h, p, ref bmi, 0);
+            Win32.ReleaseDC(IntPtr.Zero, dc);
+            if (lines == 0) return null;
+
+            bool anyAlpha = false, straight = false;
+            for (int i = 0; i < buf.Length; i += 4)
+            {
+                byte a = buf[i + 3];
+                if (a != 0) anyAlpha = true;
+                if (buf[i] > a || buf[i + 1] > a || buf[i + 2] > a) straight = true;
+            }
+            if (!anyAlpha) { for (int i = 3; i < buf.Length; i += 4) buf[i] = 255; straight = false; } // alfasız eski ikon
+            var fmt = straight ? Vortice.WIC.PixelFormat.Format32bppBGRA : Vortice.WIC.PixelFormat.Format32bppPBGRA;
+            using var src = Wic.CreateBitmapFromMemory((uint)w, (uint)h, fmt, buf, (uint)(w * 4));
+
+            // 256 px ikonu olmayan uygulamalarda kabuk küçük ikonu büyük tuvalin köşesine koyar → dolu alanı kırp
+            int minX = w, minY = h, maxX = -1, maxY = -1;
+            for (int y = 0; y < h; y++)
+            for (int x = 0; x < w; x++)
+                if (buf[(y * w + x) * 4 + 3] > 8) { if (x < minX) minX = x; if (x > maxX) maxX = x; if (y < minY) minY = y; if (y > maxY) maxY = y; }
+            if (maxX >= 0 && maxX - minX + 1 < w * 0.45f && maxY - minY + 1 < h * 0.45f)
+            {
+                int side = Math.Max(maxX - minX + 1, maxY - minY + 1);
+                int cx = Math.Clamp((minX + maxX + 1) / 2 - side / 2, 0, w - side), cy = Math.Clamp((minY + maxY + 1) / 2 - side / 2, 0, h - side);
+                using var crop = Wic.CreateBitmapFromSourceRect(src, (uint)cx, (uint)cy, (uint)side, (uint)side);
+                return FromSource(crop, maxPx, out _);
+            }
             return FromSource(src, maxPx, out _);
         }
         catch (Exception e) { Log.Error("FromHBitmap", e); return null; }
@@ -369,12 +520,13 @@ public sealed class Gfx : IDisposable
         var size = src.Size;
         float k = MathF.Min(1f, maxPx / (float)Math.Max(size.Width, size.Height));
         uint w = (uint)Math.Max(1, size.Width * k), h = (uint)Math.Max(1, size.Height * k);
-        using var scaler = Wic.CreateBitmapScaler();
-        scaler.Initialize(src, w, h, Vortice.WIC.BitmapInterpolationMode.Fant);
+        // önce ön-çarpımlı biçime çevir, SONRA küçült: saydam piksellerin rengi kenara sızmaz (koyu hale yok)
         using var conv = Wic.CreateFormatConverter();
-        conv.Initialize(scaler, Vortice.WIC.PixelFormat.Format32bppPBGRA, BitmapDitherType.None, null, 0, BitmapPaletteType.Custom);
-        dominant = Dominant(conv, (int)w, (int)h);
-        return _rt.CreateBitmapFromWicBitmap(conv, null);
+        conv.Initialize(src, Vortice.WIC.PixelFormat.Format32bppPBGRA, BitmapDitherType.None, null, 0, BitmapPaletteType.Custom);
+        using var scaler = Wic.CreateBitmapScaler();
+        scaler.Initialize(conv, w, h, Vortice.WIC.BitmapInterpolationMode.Fant);
+        dominant = Dominant(scaler, (int)w, (int)h);
+        return _rt.CreateBitmapFromWicBitmap(scaler, null);
     }
 
     static Color4 Dominant(IWICBitmapSource src, int w, int h)

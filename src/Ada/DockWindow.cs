@@ -5,6 +5,7 @@ using Ada.Core;
 using Ada.Data;
 using Ada.Native;
 using Ada.Services;
+using Vortice.Direct2D1;
 using Vortice.DirectWrite;
 using Vortice.Mathematics;
 using Rect = Vortice.Mathematics.Rect;
@@ -17,7 +18,8 @@ namespace Ada;
 /// </summary>
 public sealed unsafe class DockWindow : ISurface
 {
-    const float Margin = 30, Bottom = 8, Gap = 8, Pad = 10, LabelSpace = 40;
+    const float Margin = 30, Bottom = 8, Pad = 10, LabelSpace = 44;
+    float Gap => Store.Current.DockSpacing;
     static bool _registered;
     const uint WM_APPBAR = Win32.WM_APP + 5;
 
@@ -47,8 +49,8 @@ public sealed unsafe class DockWindow : ISurface
     readonly Dictionary<string, string> _lnkTargets = new(StringComparer.OrdinalIgnoreCase);
     static List<IntPtr>? _enumBuf;
 
-    float B => new[] { 40f, 50f, 62f }[Store.Current.DockSize];
-    float Mag => Store.Current.DockMagnify ? 1.65f : 1f;
+    float B => Store.Current.DockIconSize;
+    float Mag => Store.Current.DockMagnify ? Store.Current.DockMagnification : 1f;
 
     public DockWindow(Island island)
     {
@@ -76,11 +78,12 @@ public sealed unsafe class DockWindow : ISurface
     }
 
     /// <summary>--snap: Dock'u (isteğe bağlı fare konumuyla büyütülmüş) PNG'ye çizer.</summary>
-    public void SnapRender(string path, float? mouseX)
+    public void SnapRender(string path, float? mouseX, int frames = 90)
     {
         _snapMouse = mouseX;
-        for (int i = 0; i < 90; i++) Frame();
+        for (int i = 0; i < frames; i++) Frame();
         G.SavePng(path, _winW, _winH);
+        File.WriteAllText(path + ".txt", $"hover={_hoverItem?.Name} preview={_previewItem?.Name} menu={_menuItem?.Name} items={string.Join(",", _items.Select(x => x.Name + ":" + x.Windows.Count))} mouse={U.Mouse} inside={U.Inside} win={_winW}x{_winH} time={U.Time}");
         _snapMouse = null;
     }
     float? _snapMouse;
@@ -96,6 +99,7 @@ public sealed unsafe class DockWindow : ISurface
         bool reserve = s.DockReserve && !s.DockAutoHide;
         if (reserve) RegisterAppBar(); else RemoveAppBar();
         if (!s.DockAutoHide && _autoHidden) { _autoHidden = false; Show(); }
+        ReloadBackdrop();
         _dirty = true; Animating = true;
     }
 
@@ -191,6 +195,9 @@ public sealed unsafe class DockWindow : ISurface
             }
         }
         _items = items;
+        // iki ikon kademesini önceden hazırla (normal + büyütülmüş) → üzerine gelince takılma olmaz
+        foreach (var it in items)
+            if (!it.Launcher && !it.Separator) { I.Apps.Icon(it.Path, B); I.Apps.Icon(it.Path, B * Mag); }
         _dirty = true;
     }
 
@@ -314,6 +321,7 @@ public sealed unsafe class DockWindow : ISurface
     // ---------------- çizim ----------------
     void Frame()
     {
+        if (G.InDraw) { _dirty = true; return; }
         double now = _sw.Elapsed.TotalSeconds;
         float dt = (float)Math.Clamp(now - _last, 1 / 240.0, 1 / 24.0);
         if (!Animating) dt = 1 / 60f;
@@ -324,19 +332,25 @@ public sealed unsafe class DockWindow : ISurface
         else if (I.SnapMode) U.Inside = false;
         else if (Win32.GetCursorPos(out var cp)) U.Mouse = new Vector2((cp.X - _winX) / s, (cp.Y - _winY) / s);
 
-        float b = B, mag = Mag;
-        float H = b * mag + Pad * 2 + Bottom + LabelSpace;
+        var st = Store.Current;
+        float b = B, mag = Mag, gap = Gap;
+        if (_backdropDirty) LoadBackdrop();
+
+        // üstte açılır panel (önizleme / menü) varsa pencere yukarı doğru uzar
+        bool pop = _previewItem != null || _menuItem != null;
+        float H = b * mag + Pad * 2 + Bottom + LabelSpace + (pop ? PopSpace : 0);
+        if (_snapMouse is float smy) U.Mouse = new Vector2(_winW / s / 2 + smy, H - 30); // test faresi bu karenin yüksekliğine göre
         _hideY.Target = Concealed ? PlateH + Bottom + 6 : 0;
         _hideY.Step(dt);
 
-        // ---- yerleşim (büyütme) ----
+        // ---- yerleşim (macOS büyütmesi: hedef, tabandaki ikon merkezine göre) ----
         float plateTop = H - Bottom - PlateH;
-        bool hovering = U.Inside && U.Mouse.Y >= plateTop - b * (mag - 1) - 4 && U.Mouse.Y <= H;
+        bool overPop = pop && _popRect.Contains(U.Mouse) && U.Inside;
+        bool hovering = U.Inside && !overPop && U.Mouse.Y >= plateTop - b * (mag - 1) - 4 && U.Mouse.Y <= H;
         int n = _items.Count;
         Span<float> size = stackalloc float[n];
-        // önce taban yerleşimi: büyütme hedefi tabandaki ikon merkezine göre hesaplanır (macOS gibi)
         float baseTotal = Pad * 2;
-        for (int i = 0; i < n; i++) baseTotal += (_items[i].Separator ? 1 : b) + (i > 0 ? Gap : 0);
+        for (int i = 0; i < n; i++) baseTotal += (_items[i].Separator ? 1 : b) + (i > 0 ? gap : 0);
         float total = Pad * 2;
         float bx = -baseTotal / 2 + Pad;
         for (int i = 0; i < n; i++)
@@ -345,17 +359,17 @@ public sealed unsafe class DockWindow : ISurface
             float w0 = it.Separator ? 1 : b;
             float center = bx + w0 / 2;
             float target = w0;
-            if (!it.Separator && hovering && mag > 1)
+            if (!it.Separator && hovering && mag > 1 && _menuItem == null)
             {
                 float d = (U.Mouse.X - _winW / s / 2) - center;
                 target = b * (1 + (mag - 1) * MathF.Exp(-(d * d) / (b * b * 2.6f)));
             }
             size[i] = it.Separator ? 1 : U.Anim(HashCode.Combine("dock.sz", it.Key), target, 22);
-            total += size[i] + (i > 0 ? Gap : 0);
-            bx += w0 + Gap;
+            total += size[i] + (i > 0 ? gap : 0);
+            bx += w0 + gap;
         }
 
-        float W = MathF.Max(total, baseTotal) + Margin * 2 + 120;
+        float W = MathF.Max(MathF.Max(total, baseTotal) + Margin * 2 + 120, pop ? PopMinW : 0);
         int pw = (int)MathF.Ceiling(W * s), ph = (int)MathF.Ceiling(H * s);
         var mon = I.MonitorRect;
         int bottom = BaseBottom();
@@ -365,15 +379,16 @@ public sealed unsafe class DockWindow : ISurface
         _winW = pw; _winH = ph;
 
         G.Begin(pw, ph);
+        try {
         float cx = W / 2;
         var plate = new Rect(cx - total / 2, plateTop, total, PlateH);
-        G.Shadow(plate, 20, 14, 0.45f, 6);
-        G.FillRound(plate, 20, Theme.Rgb(0x1B1E27, 0.88f));
-        G.VGradientRound(plate, 20, Theme.Rgb(0xFFFFFF, 0.10f), Theme.Rgb(0xFFFFFF, 0.02f));
-        G.StrokeRound(new Rect(plate.X + 0.5f, plate.Y + 0.5f, plate.Width - 1, plate.Height - 1), 20, Theme.Rgb(0xFFFFFF, 0.14f), 1);
+        float rad = MathF.Min(st.DockRadius, PlateH / 2);
+        G.Shadow(plate, rad, 16, 0.42f, 7);
+        Glass(plate, rad, s);
 
         float x = plate.X + Pad;
         string? label = null; float labelX = 0, labelY = 0;
+        Item? hoverIcon = null; float hoverX = 0, hoverTop = 0;
         var fg = Win32.GetForegroundWindow();
         for (int i = 0; i < n; i++)
         {
@@ -381,8 +396,8 @@ public sealed unsafe class DockWindow : ISurface
             float sz = size[i];
             if (it.Separator)
             {
-                G.Line(new Vector2(x, plate.Y + 12), new Vector2(x, plate.Bottom - 12), Theme.Rgb(0xFFFFFF, 0.18f), 1);
-                x += sz + Gap;
+                G.Line(new Vector2(x, plate.Y + 12), new Vector2(x, plate.Bottom - 12), Theme.Rgb(0xFFFFFF, 0.20f), 1);
+                x += sz + gap;
                 continue;
             }
             float bounce = 0;
@@ -394,16 +409,19 @@ public sealed unsafe class DockWindow : ISurface
             }
             var r = new Rect(x, plate.Bottom - Pad - sz - bounce, sz, sz);
             int id = HashCode.Combine("dock", it.Key);
-            bool hit = U.Hit(new Rect(x - Gap / 2, plate.Y - (sz - b), sz + Gap, plate.Bottom - plate.Y + (sz - b)));
-            if (hit) { U.WantHand = true; label = it.Name; labelX = r.CenterX; labelY = r.Y - 12; }
+            bool hit = !overPop && U.Hit(new Rect(x - gap / 2, plate.Y - (sz - b), sz + gap, plate.Bottom - plate.Y + (sz - b)));
+            if (hit) { U.WantHand = true; label = it.Name; labelX = r.CenterX; labelY = r.Y - 12; hoverIcon = it; hoverX = r.CenterX; hoverTop = r.Y; }
             float press = U.Anim(id + 1, U.ActiveId == id && U.Down && hit ? 1 : 0, 26);
             if (hit && U.Pressed) U.ActiveId = id;
-            var rr = new Rect(r.CenterX - r.Width * (1 - 0.1f * press) / 2, r.CenterY - r.Height * (1 - 0.1f * press) / 2, r.Width * (1 - 0.1f * press), r.Height * (1 - 0.1f * press));
+            float k = 1 - 0.1f * press;
+            var rr = new Rect(r.CenterX - r.Width * k / 2, r.CenterY - r.Height * k / 2, r.Width * k, r.Height * k);
 
+            // ikon altı yumuşak gölge (zıplarken uzaklaşıp hafifler)
+            G.SoftShadow(new Vector2(r.CenterX, plate.Bottom - Pad - sz * 0.02f), sz * 0.44f, sz * 0.11f, 0.38f * (1 - MathF.Min(1, bounce / b)));
             if (it.Launcher) DrawLauncher(rr);
             else
             {
-                var bmp = I.Apps.Icon(it.Path);
+                var bmp = I.Apps.Icon(it.Path, sz);
                 if (bmp != null) G.Bitmap(bmp, rr);
                 else if (it.Path.StartsWith("ms-settings", StringComparison.OrdinalIgnoreCase))
                 {
@@ -417,26 +435,47 @@ public sealed unsafe class DockWindow : ISurface
                 }
             }
             // çalışma noktası (öndeki uygulamanınki daha parlak)
-            if (it.Windows.Count > 0)
+            if (st.DockIndicators && it.Windows.Count > 0)
             {
                 bool front = it.Windows.Contains(fg);
-                G.FillCircle(new Vector2(r.CenterX, plate.Bottom - 4), 2.2f, front ? Theme.Text : Theme.Rgb(0xFFFFFF, 0.55f));
+                G.FillCircle(new Vector2(r.CenterX, plate.Bottom - 4), 2.2f, front ? Theme.Text : Theme.Rgb(0xFFFFFF, 0.5f));
             }
 
-            if (hit && U.Released && U.ActiveId == id) Activate(it);
-            if (hit && U.RightReleased) { var item = it; Dispatcher.Post(() => Menu(item)); }
-            x += sz + Gap;
+            if (hit && U.Released && U.ActiveId == id) { _menuItem = null; _previewItem = null; Activate(it); }
+            if (hit && U.RightReleased) { _menuItem = it; _menuX = r.CenterX; _previewItem = null; Animating = true; }
+            x += sz + gap;
         }
 
-        if (label != null)
+        // ---- DockDoor tarzı önizleme: üzerinde durulunca açılır, panele geçince açık kalır ----
+        if (hoverIcon != null && _menuItem == null)
         {
-            float lw = G.Measure(label, 12, FontWeight.SemiBold) + 22;
-            var lr = new Rect(labelX - lw / 2, labelY - 26, lw, 24);
-            G.FillRound(lr, 8, Theme.Rgb(0x1B1E27, 0.95f));
-            G.StrokeRound(lr, 8, Theme.Rgb(0xFFFFFF, 0.14f), 1);
-            G.Text(label, lr, 12, Theme.Text, FontWeight.SemiBold, TextAlignment.Center);
+            if (hoverIcon != _hoverItem) { _hoverItem = hoverIcon; _hoverSince = U.Time; }
+            bool wants = st.DockPreviews && hoverIcon.Windows.Count > 0;
+            if (wants && (_previewItem != null || U.Time - _hoverSince > 0.45f)) { _previewItem = hoverIcon; _previewX = hoverX; }
+            else if (!wants && _previewItem != null && _previewItem != hoverIcon) _previewItem = null;
+            if (wants && _previewItem == null) U.NeedsFrame = true; // bekleme süresini say
+            _leaveAt = -1;
         }
-        G.End();
+        else if (_previewItem != null && !overPop)
+        {
+            _hoverItem = null;
+            if (_leaveAt < 0) _leaveAt = U.Time;
+            if (U.Time - _leaveAt > 0.35f) _previewItem = null;
+            U.NeedsFrame = true;
+        }
+        else { _hoverItem = null; _leaveAt = -1; }
+
+        float popBottom = plateTop - b * (mag - 1) - 14;
+        _popRect = default;
+        if (_menuItem != null) DrawMenu(_menuItem, popBottom, W);
+        else if (_previewItem != null) DrawPreview(_previewItem, popBottom, W);
+        else if (label != null && st.DockLabels) Label(label, labelX, labelY);
+
+        // menü dışına tıklayınca kapan
+        if (_menuItem != null && U.Pressed && !overPop && hoverIcon != _menuItem) _menuItem = null;
+
+        }
+        finally { G.End(); }
         G.Present(Hwnd, _winX, _winY, pw, ph);
 
         Animating = U.NeedsFrame || !_hideY.Settled;
@@ -445,6 +484,176 @@ public sealed unsafe class DockWindow : ISurface
         U.GcAnims();
         if (Concealed && _hideY.Settled && _shown && I.FullscreenHidden) { Win32.ShowWindow(Hwnd, 0); _shown = false; }
         if (!I.FullscreenHidden && !_shown && !I.SnapMode) Show();
+    }
+
+    // ================= görünüm =================
+    const float PopSpace = 210, PopMinW = 980;
+    ID2D1Bitmap? _backdrop;
+    bool _backdropDirty = true;
+    Rect _popRect;
+    Item? _previewItem, _hoverItem, _menuItem;
+    float _previewX, _menuX, _hoverSince, _leaveAt = -1;
+    readonly Dictionary<IntPtr, (ID2D1Bitmap? bmp, float t)> _thumbs = new();
+
+    public void ReloadBackdrop() { _backdropDirty = true; _dirty = true; }
+
+    void LoadBackdrop()
+    {
+        _backdropDirty = false;
+        _backdrop?.Dispose(); _backdrop = null;
+        if (Store.Current.DockStyle != 0) return;
+        var file = WallpaperService.Current();
+        var mon = I.MonitorRect;
+        if (File.Exists(file)) _backdrop = G.BlurredWallpaper(file, mon.Width, mon.Height);
+    }
+
+    /// <summary>Plaka/panel zemini: buzlu cam (duvar kağıdının bulanık kopyası hizalı), koyu ya da şeffaf.</summary>
+    void Glass(Rect r, float rad, float s)
+    {
+        var st = Store.Current;
+        float op = st.DockOpacity;
+        if (st.DockStyle == 0 && _backdrop != null)
+        {
+            var mon = I.MonitorRect;
+            var bs = _backdrop.Size;
+            var m = Matrix3x2.CreateScale(mon.Width / s / bs.Width, mon.Height / s / bs.Height)
+                    * Matrix3x2.CreateTranslation((mon.Left - _winX) / s, (mon.Top - _winY) / s);
+            G.FillRoundBitmap(r, rad, _backdrop, m);
+            G.FillRound(r, rad, Theme.Rgb(0x14161D, 0.18f + 0.55f * op));
+        }
+        else if (st.DockStyle == 2) G.FillRound(r, rad, Theme.Rgb(0xFFFFFF, 0.04f + 0.10f * op));
+        else G.FillRound(r, rad, Theme.Rgb(0x16181F, 0.45f + 0.55f * op));
+        G.VGradientRound(r, rad, Theme.Rgb(0xFFFFFF, 0.13f), Theme.Rgb(0xFFFFFF, 0.02f));
+        G.StrokeRound(new Rect(r.X + 0.5f, r.Y + 0.5f, r.Width - 1, r.Height - 1), rad, Theme.Rgb(0xFFFFFF, 0.17f), 1);
+    }
+
+    void Label(string text, float x, float iconTop)
+    {
+        float lw = G.Measure(text, 12, FontWeight.SemiBold) + 24;
+        var lr = new Rect(x - lw / 2, iconTop - 30, lw, 26);
+        G.SoftShadow(new Vector2(lr.CenterX, lr.Bottom), lw * 0.5f, 8, 0.3f);
+        Glass(lr, 9, I.Scale);
+        G.Text(text, lr, 12, Theme.Text, FontWeight.SemiBold, TextAlignment.Center);
+    }
+
+    /// <summary>DockDoor: uygulamanın pencereleri canlı görüntüleriyle; tıkla → o pencereye geç, × → kapat.</summary>
+    void DrawPreview(Item it, float bottom, float W)
+    {
+        const float cardW = 216, thumbH = 122, pad = 10, titleH = 30;
+        int n = Math.Min(it.Windows.Count, 4);
+        if (n == 0) { _previewItem = null; return; }
+        float pwid = n * cardW + (n + 1) * pad, phgt = thumbH + titleH + pad * 2 + 4;
+        float px = Math.Clamp(_previewX - pwid / 2, 8, W - pwid - 8);
+        var panel = new Rect(px, bottom - phgt, pwid, phgt);
+        _popRect = new Rect(panel.X - 6, panel.Y - 6, panel.Width + 12, panel.Height + 40);
+        G.Shadow(panel, 16, 14, 0.45f, 6);
+        Glass(panel, 16, I.Scale);
+        int budget = 1; // kare başına en fazla bir pencere yakala (takılma olmasın)
+        IntPtr? close = null, focus = null;
+        for (int i = 0; i < n; i++)
+        {
+            var h = it.Windows[i];
+            var card = new Rect(panel.X + pad + i * (cardW + pad), panel.Y + pad, cardW, thumbH + titleH);
+            int id = HashCode.Combine("dock.pv", h);
+            bool hit = U.Hit(card);
+            float hv = U.Anim(id, hit ? 1 : 0);
+            if (hv > 0.01f) G.FillRound(new Rect(card.X - 4, card.Y - 4, card.Width + 8, card.Height + 8), 12, Theme.Rgb(0xFFFFFF, 0.08f * hv));
+            var tr = new Rect(card.X, card.Y, cardW, thumbH);
+            if (!_thumbs.TryGetValue(h, out var th) || U.Time - th.t > 3f)
+            {
+                if (budget-- > 0)
+                {
+                    th.bmp?.Dispose();
+                    th = (G.CaptureWindow(h, (int)(cardW * I.Scale)), U.Time);
+                    _thumbs[h] = th;
+                }
+                else U.NeedsFrame = true;
+            }
+            if (th.bmp != null) G.BitmapCover(th.bmp, tr, 9);
+            else
+            {
+                G.FillRound(tr, 9, Theme.Rgb(0x000000, 0.35f));
+                var ib = I.Apps.Icon(it.Path, 48);
+                if (ib != null) G.Bitmap(ib, new Rect(tr.CenterX - 22, tr.CenterY - 30, 44, 44));
+                G.Text(Win32.IsIconic(h) ? "Simge durumunda" : "Önizleme yok", new Rect(tr.X, tr.CenterY + 18, tr.Width, 16), 10.5f, Theme.Text3, FontWeight.SemiBold, TextAlignment.Center);
+            }
+            G.StrokeRound(tr, 9, Theme.Mix(Theme.Rgb(0xFFFFFF, 0.12f), Theme.Accent, hv), 1 + hv);
+            var title = Win32.WindowText(h);
+            G.Text(title.Length > 0 ? title : it.Name, new Rect(card.X + 2, tr.Bottom + 6, cardW - 4, 18), 11.5f, Theme.Text, FontWeight.SemiBold);
+            // kapat
+            if (hv > 0.05f)
+            {
+                var cc = new Vector2(tr.Right - 14, tr.Y + 14);
+                G.Alpha *= hv;
+                if (U.IconButton(HashCode.Combine("dock.pvx", h), cc, 10, "", 8, Theme.Text, true, Theme.Rgb(0x000000, 0.6f))) close = h;
+                G.Alpha /= hv;
+            }
+            if (hit && U.Released && close == null && U.ActiveId == 0) focus = h;
+            if (hit) U.WantHand = true;
+        }
+        if (close is IntPtr ch) { Win32.PostMessageW(ch, 0x10, 0, 0); it.Windows.Remove(ch); _thumbs.Remove(ch); }
+        if (focus is IntPtr fh)
+        {
+            if (Win32.IsIconic(fh)) Win32.ShowWindow(fh, 9);
+            Win32.SetForegroundWindow(fh);
+            _previewItem = null;
+        }
+        if (_thumbs.Count > 24) { foreach (var v in _thumbs.Values) v.bmp?.Dispose(); _thumbs.Clear(); }
+    }
+
+    /// <summary>Kendi sağ tık menümüz (Windows menüsü yerine, Dock'un camıyla).</summary>
+    void DrawMenu(Item it, float bottom, float W)
+    {
+        var entries = new List<(string text, string glyph, Action run, bool danger)>();
+        if (!it.Launcher)
+        {
+            entries.Add((it.Pinned ? "Dock'tan kaldır" : "Dock'ta tut", it.Pinned ? "" : "", () => TogglePin(it), false));
+            entries.Add(("Yeni pencere", "", () =>
+            {
+                it.BounceStart = U.Time; Animating = true;
+                var app = new PinnedApp { Name = it.Name, Path = it.Path, Args = it.Args };
+                Dispatcher.Post(() => AppsService.Launch(app));
+            }, false));
+            if (it.Windows.Count > 0)
+            {
+                entries.Add(("Tümünü göster", "", () => { foreach (var w in it.Windows) if (Win32.IsIconic(w)) Win32.ShowWindow(w, 9); if (it.Windows.Count > 0) Win32.SetForegroundWindow(it.Windows[0]); }, false));
+                entries.Add((it.Windows.Count > 1 ? $"Tümünü kapat ({it.Windows.Count})" : "Kapat", "",
+                    () => { foreach (var w in it.Windows) Win32.PostMessageW(w, 0x10, 0, 0); }, true));
+            }
+        }
+        else entries.Add(("Spotlight'ı aç", "", () => Dispatcher.Post(() => I.ToggleSpotlight()), false));
+        entries.Add(("Dock ayarları…", Glyph.Settings, () => I.OpenSettings(SettingsWindow.DockPage), false));
+
+        const float rowH = 32, mw = 220;
+        float mh = entries.Count * rowH + 12;
+        float mx = Math.Clamp(_menuX - mw / 2, 8, W - mw - 8);
+        var panel = new Rect(mx, bottom - mh, mw, mh);
+        _popRect = new Rect(panel.X - 6, panel.Y - 6, panel.Width + 12, panel.Height + 12);
+        G.Shadow(panel, 14, 14, 0.45f, 6);
+        Glass(panel, 14, I.Scale);
+        G.Text(it.Name, new Rect(panel.X, panel.Y - 22, mw, 18), 11, Theme.Text2, FontWeight.SemiBold, TextAlignment.Center);
+        for (int i = 0; i < entries.Count; i++)
+        {
+            var (text, glyph, run, danger) = entries[i];
+            var r = new Rect(panel.X + 6, panel.Y + 6 + i * rowH, mw - 12, rowH);
+            int id = HashCode.Combine("dock.menu", i, text);
+            bool hit = U.Hit(r);
+            float hv = U.Anim(id, hit ? 1 : 0, 22);
+            if (hv > 0.01f) G.FillRound(r, 8, (danger ? Theme.Red : Theme.Accent).WithA(0.85f * hv));
+            var fg = Theme.Mix(danger ? Theme.Red : Theme.Text, hv > 0.5f ? Theme.Rgb(0x0B0D12) : Theme.Text, hv);
+            G.Icon(glyph, new Vector2(r.X + 16, r.CenterY), 11, fg);
+            G.Text(text, new Rect(r.X + 34, r.Y, r.Width - 40, r.Height), 12.5f, fg, FontWeight.SemiBold);
+            if (hit) U.WantHand = true;
+            if (U.Click(id + 1, r)) { _menuItem = null; Dispatcher.Post(run); }
+        }
+    }
+
+    void TogglePin(Item it)
+    {
+        var apps = Store.Current.Apps;
+        if (it.Pinned) apps.RemoveAll(a => a.Path.Equals(it.Path, StringComparison.OrdinalIgnoreCase));
+        else apps.Add(new PinnedApp { Name = it.Name, Path = it.Path });
+        Store.Save(); Refresh();
     }
 
     void DrawLauncher(Rect r)
@@ -473,31 +682,6 @@ public sealed unsafe class DockWindow : ISurface
         Dispatcher.Post(() => AppsService.Launch(app));
     }
 
-    void Menu(Item it)
-    {
-        if (it.Launcher || it.Separator) return;
-        var menu = Win32.CreatePopupMenu();
-        Win32.AppendMenuW(menu, Win32.MF_STRING, 1, it.Pinned ? "Dock'tan kaldır" : "Dock'ta tut");
-        if (it.Windows.Count > 0) Win32.AppendMenuW(menu, Win32.MF_STRING, 2, it.Windows.Count > 1 ? $"Tüm pencereleri kapat ({it.Windows.Count})" : "Kapat");
-        Win32.AppendMenuW(menu, Win32.MF_SEPARATOR, 0, null);
-        Win32.AppendMenuW(menu, Win32.MF_STRING, 3, "Dock ayarları…");
-        Win32.GetCursorPos(out var p);
-        Win32.SetForegroundWindow(Hwnd);
-        int cmd = Win32.TrackPopupMenu(menu, Win32.TPM_RETURNCMD | Win32.TPM_RIGHTBUTTON, p.X, p.Y, 0, Hwnd, IntPtr.Zero);
-        Win32.DestroyMenu(menu);
-        var apps = Store.Current.Apps;
-        switch (cmd)
-        {
-            case 1:
-                if (it.Pinned) apps.RemoveAll(a => a.Path.Equals(it.Path, StringComparison.OrdinalIgnoreCase));
-                else apps.Add(new PinnedApp { Name = it.Name, Path = it.Path });
-                Store.Save(); Refresh(); break;
-            case 2:
-                foreach (var w in it.Windows) Win32.PostMessageW(w, 0x10, 0, 0); // WM_CLOSE
-                break;
-            case 3: I.OpenSettings(SettingsWindow.DockPage); break;
-        }
-    }
 }
 
 /// <summary>Windows görev çubuğunu gizleme/geri getirme (Ada kapanınca ya da ayar kapatılınca geri gelir).</summary>

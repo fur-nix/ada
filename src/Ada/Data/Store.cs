@@ -74,6 +74,22 @@ public sealed class State
     /// <summary>Windows görev çubuğunu tamamen gizle (Ada kapanınca geri gelir).</summary>
     public bool HideTaskbar { get; set; }
     public bool DockShowRunning { get; set; } = true;
+    /// <summary>Simge boyutu (DIP, 32–96). 0 → eski DockSize'dan taşınır.</summary>
+    public float DockIconSize { get; set; }
+    /// <summary>Büyütme oranı 1.0–2.4.</summary>
+    public float DockMagnification { get; set; } = 1.65f;
+    public float DockSpacing { get; set; } = 8f;
+    public float DockRadius { get; set; } = 22f;
+    public float DockOpacity { get; set; } = 0.78f;
+    /// <summary>0 buzlu cam (duvar kağıdından), 1 koyu, 2 şeffaf.</summary>
+    public int DockStyle { get; set; }
+    public bool DockLabels { get; set; } = true;
+    public bool DockBounce { get; set; } = true;
+    public bool DockPreviews { get; set; } = true;
+    public bool DockIndicators { get; set; } = true;
+
+    /// <summary>Spotlight: neyi kaç kez açtın (Launchy gibi sık kullanılanı öne alır).</summary>
+    public Dictionary<string, int> LaunchCounts { get; set; } = new();
 
     // ---- Spotlight arama ----
     /// <summary>0 Ctrl+Space, 1 Alt+Space, 2 kapalı.</summary>
@@ -104,6 +120,16 @@ public sealed class State
         Visibility = Math.Clamp(Visibility, 0, 2);
         AnimSpeed = Math.Clamp(AnimSpeed, 0, 2);
         DockSize = Math.Clamp(DockSize, 0, 2);
+        if (DockIconSize <= 0) DockIconSize = new[] { 40f, 50f, 62f }[DockSize];
+        DockIconSize = Math.Clamp(DockIconSize, 32, 96);
+        DockMagnification = Math.Clamp(DockMagnification, 1f, 2.4f);
+        DockSpacing = Math.Clamp(DockSpacing, 2, 24);
+        DockRadius = Math.Clamp(DockRadius, 6, 40);
+        DockOpacity = Math.Clamp(DockOpacity, 0.2f, 1f);
+        DockStyle = Math.Clamp(DockStyle, 0, 2);
+        LaunchCounts ??= new();
+        if (LaunchCounts.Count > 400) // en az kullanılanları at
+            LaunchCounts = LaunchCounts.OrderByDescending(kv => kv.Value).Take(300).ToDictionary(kv => kv.Key, kv => kv.Value);
         SearchHotkey = Math.Clamp(SearchHotkey, 0, 2);
         var order = TabOrder.Where(t => t is >= 0 and < TabCount).Distinct().ToList();
         for (int i = 0; i < TabCount; i++) if (!order.Contains(i)) order.Add(i);
@@ -124,6 +150,9 @@ public sealed class State
         Visibility = d.Visibility; AnimSpeed = d.AnimSpeed; Shadow = d.Shadow;
         DockEnabled = d.DockEnabled; DockSize = d.DockSize; DockMagnify = d.DockMagnify; DockAutoHide = d.DockAutoHide;
         DockReserve = d.DockReserve; HideTaskbar = d.HideTaskbar; DockShowRunning = d.DockShowRunning;
+        DockIconSize = 50; DockMagnification = d.DockMagnification; DockSpacing = d.DockSpacing; DockRadius = d.DockRadius;
+        DockOpacity = d.DockOpacity; DockStyle = d.DockStyle; DockLabels = d.DockLabels; DockBounce = d.DockBounce;
+        DockPreviews = d.DockPreviews; DockIndicators = d.DockIndicators;
         SearchHotkey = d.SearchHotkey; SearchFiles = d.SearchFiles; SearchWeb = d.SearchWeb;
         OpenOnHover = d.OpenOnHover; CollapseDelayMs = d.CollapseDelayMs; HideOnFullscreen = d.HideOnFullscreen;
         NotifyClipboard = d.NotifyClipboard; NotifyTrack = d.NotifyTrack; NotifyReminder = d.NotifyReminder; ReminderSound = d.ReminderSound;

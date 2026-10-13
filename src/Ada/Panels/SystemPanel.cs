@@ -58,7 +58,7 @@ public sealed class SystemPanel : Panel
         {
             var ap = apps[i];
             float ry = top.Y + 32 + i * 26;
-            var icon = ap.Path != null ? I.Apps.Icon(ap.Path) : null;
+            var icon = ap.Path != null ? I.Apps.Icon(ap.Path, 32) : null;
             var ir = new Rect(top.X + 14, ry + 2, 18, 18);
             if (icon != null) G.Bitmap(icon, ir); else G.FillRound(ir, 5, Theme.SurfaceHi);
             G.Text(ap.Name, new Rect(top.X + 40, ry, rightW - 120, 16), 12, Theme.Text, FontWeight.SemiBold);

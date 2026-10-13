@@ -88,7 +88,7 @@ public sealed class AppsPanel : Panel
                 continue;
             }
             var app = apps[i];
-            var bmp = I.Apps.Icon(app.Path);
+            var bmp = I.Apps.Icon(app.Path, 40);
             if (bmp != null) G.Bitmap(bmp, ic);
             else { G.FillRound(ic, 10, Theme.SurfaceHi); G.Icon(app.Path.StartsWith("ms-settings") ? Core.Glyph.Settings : Core.Glyph.Apps, new Vector2(ic.CenterX, ic.CenterY), 13, Theme.Text); }
             G.Text(app.Name, new Rect(cell.X + 2, cell.Y + 42, cell.Width - 4, 16), 10.5f, Theme.Mix(Theme.Text2, Theme.Text, h), FontWeight.SemiBold, TextAlignment.Center);
@@ -125,7 +125,7 @@ public sealed class AppsPanel : Panel
             bool hit = U.Hit(r) && U.Hit(list);
             float h = U.Anim(id, hit || i == _sel ? 1 : 0);
             if (h > 0.01f) G.FillRound(r, 9, Theme.Surface.WithA(0.6f + h));
-            var bmp = I.Apps.Icon(e.Path);
+            var bmp = I.Apps.Icon(e.Path, 24);
             var ir = new Rect(r.X + 10, r.CenterY - 9, 18, 18);
             if (bmp != null) G.Bitmap(bmp, ir); else G.FillRound(ir, 5, Theme.SurfaceHi);
             G.Text(e.Name, new Rect(r.X + 38, r.Y, r.Width - 170, r.Height), 12.5f, Theme.Text, FontWeight.SemiBold);

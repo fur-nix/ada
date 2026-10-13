@@ -46,9 +46,15 @@ public sealed class AppsService
         s.Apps.Add(new PinnedApp { Name = "Ayarlar", Path = "ms-settings:" });
     }
 
-    public ID2D1Bitmap? Icon(string path)
+    /// <summary>
+    /// Uygulama/dosya ikonu. Kabuktan 256 px (jumbo) alınır ve çizileceği boyuta en yakın kademeye (32/64/128/224 DIP)
+    /// yüksek kaliteyle küçültülür → büyütülmüş Dock'ta bile keskin, kenarlar pürüzsüz.
+    /// </summary>
+    public ID2D1Bitmap? Icon(string path, float sizeDip = 48)
     {
-        if (_icons.TryGetValue(path, out var bmp)) return bmp;
+        int bucket = sizeDip <= 32 ? 32 : sizeDip <= 64 ? 64 : sizeDip <= 128 ? 128 : 224;
+        var key = bucket + "|" + path;
+        if (_icons.TryGetValue(key, out var bmp)) return bmp;
         bmp = null;
         if (!path.Contains(':') || File.Exists(path) || Directory.Exists(path))
         {
@@ -58,9 +64,10 @@ public sealed class AppsService
                 if (Win32.SHCreateItemFromParsingName(path, IntPtr.Zero, iid, out var p) == 0)
                 {
                     var f = ComUtil.Wrap<IShellItemImageFactory>(p);
-                    int px = (int)(48 * _g.Scale);
+                    int px = (int)MathF.Ceiling(bucket * _g.Scale);
+                    int ask = px <= 48 ? 64 : 256; // her zaman hedeften büyük kaynak iste, aşağı ölçekle
                     // SIIGBF_ICONONLY = 4 (küçük resim yerine ikon), BIGGERSIZEOK = 1
-                    if (f != null && f.GetImage(new NativeSize { cx = px, cy = px }, 0x4 | 0x1, out var hbm) == 0)
+                    if (f != null && f.GetImage(new NativeSize { cx = ask, cy = ask }, 0x4 | 0x1, out var hbm) == 0)
                     {
                         bmp = _g.FromHBitmap(hbm, px);
                         Win32.DeleteObject(hbm);
@@ -69,7 +76,7 @@ public sealed class AppsService
             }
             catch (Exception e) { Log.Error("Icon", e); }
         }
-        _icons[path] = bmp;
+        _icons[key] = bmp;
         return bmp;
     }
 

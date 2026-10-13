@@ -308,6 +308,7 @@ public sealed unsafe class Island
         var dock = new DockWindow(this);
         dock.SnapRender(Path.Combine(dir, "7-dock.png"), null);
         dock.SnapRender(Path.Combine(dir, "7-dock-buyutme.png"), -60);
+        dock.SnapRender(Path.Combine(dir, "7-dock-onizleme.png"), 298, 400);
         var sp = new SpotlightWindow(this);
         Pump(1.5);
         sp.SnapRender("vis", Path.Combine(dir, "8-spotlight-uygulama.png"));
@@ -337,11 +338,40 @@ public sealed unsafe class Island
     {
         try
         {
-            var s = Instance.SurfaceFor(h);
-            if (s != null) return s.WndProc(h, m, w, l);
-            return Instance.WndProc(h, m, w, l);
+            // Çizim sürerken (COM çağrısı mesaj pompaladığında) durum değiştiren mesajları ertele → iç içe çizim/çökme yok
+            if (Instance.G.InDraw && Deferrable(m))
+            {
+                if (m != Win32.WM_TIMER) Instance._deferred.Add((h, m, w, l));
+                return m == Win32.WM_DROPFILES ? 0 : 0;
+            }
+            return Instance.Dispatch(h, m, w, l);
         }
         catch (Exception e) { Log.Error("WndProc " + m, e); return Win32.DefWindowProcW(h, m, w, l); }
+    }
+
+    IntPtr Dispatch(IntPtr h, uint m, IntPtr w, IntPtr l)
+    {
+        var s = SurfaceFor(h);
+        if (s != null) return s.WndProc(h, m, w, l);
+        return WndProc(h, m, w, l);
+    }
+
+    readonly List<(IntPtr h, uint m, IntPtr w, IntPtr l)> _deferred = new();
+
+    static bool Deferrable(uint m) => m is Win32.WM_TIMER or Win32.WM_CHAR or Win32.WM_KEYDOWN or Win32.WM_SYSKEYDOWN
+        or Win32.WM_HOTKEY or Win32.WM_DISPLAYCHANGE or Win32.WM_DPICHANGED or Win32.WM_DROPFILES or Win32.WM_CLIPBOARDUPDATE
+        or Win32.WM_SETTINGCHANGE or 0x10 /* WM_CLOSE */ || (m >= Win32.WM_APP && m < 0xC000);
+
+    /// <summary>Çizim bitince ertelenen mesajları sırayla işle.</summary>
+    void ReplayDeferred()
+    {
+        if (_deferred.Count == 0 || G.InDraw) return;
+        var list = _deferred.ToArray();
+        _deferred.Clear();
+        foreach (var (h, m, w, l) in list)
+        {
+            try { Dispatch(h, m, w, l); } catch (Exception e) { Log.Error("deferred " + m, e); }
+        }
     }
 
     IntPtr WndProc(IntPtr h, uint m, IntPtr w, IntPtr l)
@@ -425,6 +455,7 @@ public sealed unsafe class Island
                 UpdateMonitor();
                 return 0;
             case Win32.WM_SETTINGCHANGE:
+                if ((int)w == 0x14) Dock?.ReloadBackdrop(); // SPI_SETDESKWALLPAPER: buzlu camı yenile
                 _dirty = true;
                 break;
             case Dispatcher.WM_RUN:
@@ -461,6 +492,7 @@ public sealed unsafe class Island
                 double t0 = _sw.Elapsed.TotalMilliseconds;
                 if (_animating || _dirty) Frame();
                 FrameSurfaces();
+                ReplayDeferred();
                 if (!_animating && !SurfacesAnimating()) continue;
                 // vsync; DwmFlush başarısız olur ya da anında dönerse döngüyü ~120 fps'te sınırla
                 if (Win32.DwmFlush() != 0 || _sw.Elapsed.TotalMilliseconds - t0 < 4) Thread.Sleep(8);
@@ -478,6 +510,7 @@ public sealed unsafe class Island
                 }
                 if (_dirty) Frame();
                 FrameSurfaces();
+                ReplayDeferred();
             }
         }
     }
@@ -491,6 +524,7 @@ public sealed unsafe class Island
 
     void Frame()
     {
+        if (G.InDraw) { _dirty = true; return; }
         _dbgFrames++;
         double now = _sw.Elapsed.TotalSeconds;
         float dt = (float)(now - _last);
@@ -517,8 +551,8 @@ public sealed unsafe class Island
         _winW = pw; _winH = ph;
 
         G.Begin(pw, ph);
-        Draw(W, H);
-        G.End();
+        try { Draw(W, H); }
+        finally { G.End(); }
         G.Present(Hwnd, _winX, _winY, pw, ph);
 
         bool anim = !_w.Settled || !_h.Settled || !_r.Settled || !_hideY.Settled || !_collA.Settled || !_liveA.Settled || !_notch.Settled

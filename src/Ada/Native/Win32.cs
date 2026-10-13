@@ -62,6 +62,9 @@ public struct OPENFILENAME
 }
 
 [StructLayout(LayoutKind.Sequential)]
+public struct BITMAP { public int bmType, bmWidth, bmHeight, bmWidthBytes; public ushort bmPlanes, bmBitsPixel; public IntPtr bmBits; }
+
+[StructLayout(LayoutKind.Sequential)]
 public struct APPBARDATA { public uint cbSize; public IntPtr hWnd; public uint uCallbackMessage; public uint uEdge; public RECT rc; public IntPtr lParam; }
 
 [StructLayout(LayoutKind.Sequential)]
@@ -170,6 +173,7 @@ public static unsafe class Win32
     [DllImport("user32.dll", CharSet = CharSet.Unicode)] public static extern int GetWindowTextW(IntPtr h, char* buf, int max);
     [DllImport("user32.dll")] public static extern int GetWindowTextLengthW(IntPtr h);
     [DllImport("user32.dll")] public static extern bool IsZoomed(IntPtr h);
+    [DllImport("user32.dll")] public static extern bool PrintWindow(IntPtr h, IntPtr dc, uint flags);
     [DllImport("dwmapi.dll")] public static extern int DwmGetWindowAttribute(IntPtr h, int attr, out int value, int size);
     [DllImport("shell32.dll")] public static extern IntPtr SHAppBarMessage(uint msg, ref APPBARDATA data);
     [DllImport("kernel32.dll")] public static extern IntPtr OpenProcess(uint access, bool inherit, int pid);
@@ -201,6 +205,8 @@ public static unsafe class Win32
     [DllImport("kernel32.dll")] public static extern bool K32GetProcessMemoryInfo(IntPtr proc, out PROCESS_MEMORY_COUNTERS c, int size);
     [DllImport("user32.dll")] public static extern bool DestroyIcon(IntPtr h);
 
+    [DllImport("gdi32.dll")] public static extern int GetObjectW(IntPtr h, int size, out BITMAP bm);
+    [DllImport("gdi32.dll")] public static extern int GetDIBits(IntPtr hdc, IntPtr hbm, uint start, uint lines, byte* bits, ref BITMAPINFOHEADER bmi, uint usage);
     [DllImport("gdi32.dll")] public static extern IntPtr CreateCompatibleDC(IntPtr dc);
     [DllImport("gdi32.dll")] public static extern bool DeleteDC(IntPtr dc);
     [DllImport("gdi32.dll")] public static extern IntPtr SelectObject(IntPtr dc, IntPtr obj);

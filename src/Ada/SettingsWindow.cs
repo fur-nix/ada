@@ -154,6 +154,7 @@ public sealed unsafe class SettingsWindow : ISurface
     {
         if (page == _page) return;
         _prevPage = _page; _page = page; _pageT = 0; _dirty = true;
+        _scroll.Snap(0);
     }
 
     // ---------------- çizim ----------------
@@ -168,11 +169,10 @@ public sealed unsafe class SettingsWindow : ISurface
 
         float s = I.Scale;
         int pw = (int)MathF.Ceiling((W + M * 2) * s), ph = (int)MathF.Ceiling((H + M * 2) * s);
+        if (G.InDraw) { _dirty = true; return; }
         G.Begin(pw, ph);
-        G.PushTranslate(M, M);
-        Draw();
-        G.PopTransform();
-        G.End();
+        try { G.PushTranslate(M, M); Draw(); G.PopTransform(); }
+        finally { G.End(); }
         G.PresentInPlace(Hwnd, pw, ph);
 
         Animating = U.NeedsFrame || _pageT < 1 || !_nav.Settled;
@@ -242,6 +242,15 @@ public sealed unsafe class SettingsWindow : ISurface
         G.Text(Pages[p], new Rect(a.X, a.Y, a.Width, 34), 24, Theme.Text, FontWeight.Bold);
         G.Text(PageSubs[p], new Rect(a.X, a.Y + 34, a.Width, 18), 12.5f, Theme.Text2, FontWeight.Normal, font: Theme.TextFont);
         var body = new Rect(a.X, a.Y + 68, a.Width, a.Height - 68);
+        // kaydırılabilir içerik (uzun sayfalar)
+        bool cur = p == _page;
+        float sc = cur ? _scroll.Value : 0;
+        var savedMouse = U.Mouse; bool savedInside = U.Inside;
+        U.Inside = savedInside && body.Contains(savedMouse);
+        U.Mouse = new Vector2(savedMouse.X, savedMouse.Y + sc);
+        G.PushClip(new Rect(body.X - 12, body.Y, body.Width + 24, body.Height));
+        G.PushTranslate(0, -sc);
+        _lastY = body.Y;
         switch (p)
         {
             case 0: PageLook(body); break;
@@ -253,7 +262,27 @@ public sealed unsafe class SettingsWindow : ISurface
             case 6: PageGeneral(body); break;
             case 7: PageAbout(body); break;
         }
+        G.PopTransform();
+        G.PopClip();
+        U.Mouse = savedMouse; U.Inside = savedInside;
+        if (!cur) return;
+        float max = MathF.Max(0, _lastY - body.Bottom + 16);
+        if (body.Contains(savedMouse) && U.Wheel != 0) _scroll.Target -= U.Wheel * 90;
+        _scroll.Target = Math.Clamp(_scroll.Target, 0, max);
+        _scroll.Step(U.Dt);
+        if (!_scroll.Settled) U.NeedsFrame = true;
+        if (max > 0)
+        {
+            // ince kaydırma çubuğu + alt kenarda solma
+            float th = body.Height * body.Height / (body.Height + max);
+            float ty = body.Y + (body.Height - th) * (_scroll.Value / max);
+            G.FillRound(new Rect(body.Right + 10, ty, 3, th), 1.5f, Theme.Rgb(0xFFFFFF, 0.18f));
+            if (_scroll.Value < max - 2) G.VGradientRound(new Rect(body.X - 12, body.Bottom - 30, body.Width + 24, 30), 0, Theme.Rgb(0x111420, 0), Theme.Rgb(0x111420));
+        }
     }
+
+    Spring _scroll = new(0, 300, 34);
+    float _lastY;
 
     // ---------- ortak satır ----------
     Rect Row(ref float y, Rect body, string title, string? desc, float h = 56)
@@ -263,6 +292,7 @@ public sealed unsafe class SettingsWindow : ISurface
         if (desc != null) G.Text(desc, new Rect(r.X, r.Y + 28, r.Width - 320, 18), 11.5f, Theme.Text3, FontWeight.Normal, font: Theme.TextFont);
         G.Line(new Vector2(r.X, r.Bottom), new Vector2(r.Right, r.Bottom), Theme.Rgb(0xFFFFFF, 0.05f), 1);
         y += h;
+        _lastY = MathF.Max(_lastY, y);
         return new Rect(r.Right - 300, r.Y + (h - 32) / 2, 300, 32);
     }
 
@@ -391,23 +421,66 @@ public sealed unsafe class SettingsWindow : ISurface
     {
         var st = Store.Current;
         float y = b.Y;
-        var c = Row(ref y, b, "Dock'u göster", "Ekranın altında MacBook tarzı uygulama çubuğu", 54);
+        Section(ref y, b, "GENEL");
+        var c = Row(ref y, b, "Dock'u göster", "Ekranın altında MacBook tarzı uygulama çubuğu", 50);
         if (U.Toggle(Ui.Id("d.on"), c, st.DockEnabled)) { st.DockEnabled = !st.DockEnabled; Changed(); }
-        c = Row(ref y, b, "Windows görev çubuğunu gizle", "Tamamen kaldırır; Ada kapanınca ya da bu kapatılınca geri gelir", 54);
+        c = Row(ref y, b, "Windows görev çubuğunu gizle", "Tamamen kaldırır; Ada kapanınca ya da bu kapatılınca geri gelir", 50);
         if (U.Toggle(Ui.Id("d.tb"), c, st.HideTaskbar)) { st.HideTaskbar = !st.HideTaskbar; Changed(); }
-        c = Row(ref y, b, "Boyut", "Dock simgelerinin büyüklüğü", 54);
-        int v = U.Segmented(Ui.Id("d.size"), c, new[] { "Küçük", "Orta", "Büyük" }, st.DockSize);
-        if (v != st.DockSize) { st.DockSize = v; Changed(); }
-        c = Row(ref y, b, "Büyütme", "Üzerine gelince simgeler macOS gibi büyür", 54);
+
+        Section(ref y, b, "GÖRÜNÜM");
+        c = Row(ref y, b, "Stil", "Buzlu cam: duvar kağıdının bulanık yansıması", 50);
+        int v = U.Segmented(Ui.Id("d.style"), c, new[] { "Buzlu cam", "Koyu", "Şeffaf" }, st.DockStyle);
+        if (v != st.DockStyle) { st.DockStyle = v; Changed(); }
+        float size = st.DockIconSize;
+        if (SliderRow(ref y, b, "d.size", "Simge boyutu", $"{size:0} px", ref size, 32, 96)) { st.DockIconSize = MathF.Round(size); Changed(); }
+        float sp = st.DockSpacing;
+        if (SliderRow(ref y, b, "d.gap", "Simge aralığı", $"{sp:0} px", ref sp, 2, 24)) { st.DockSpacing = MathF.Round(sp); Changed(); }
+        float rad = st.DockRadius;
+        if (SliderRow(ref y, b, "d.rad", "Köşe yuvarlaklığı", $"{rad:0} px", ref rad, 6, 40)) { st.DockRadius = MathF.Round(rad); Changed(); }
+        float op = st.DockOpacity;
+        if (SliderRow(ref y, b, "d.op", "Arka plan yoğunluğu", $"%{op * 100:0}", ref op, 0.2f, 1f)) { st.DockOpacity = op; Changed(); }
+
+        Section(ref y, b, "BÜYÜTME VE EFEKTLER");
+        c = Row(ref y, b, "Büyütme", "Üzerine gelince simgeler macOS gibi büyür", 50);
         if (U.Toggle(Ui.Id("d.mag"), c, st.DockMagnify)) { st.DockMagnify = !st.DockMagnify; Changed(); }
-        c = Row(ref y, b, "Otomatik gizle", "Fare ekranın altına gelince belirir", 54);
-        if (U.Toggle(Ui.Id("d.auto"), c, st.DockAutoHide)) { st.DockAutoHide = !st.DockAutoHide; Changed(); }
-        c = Row(ref y, b, "Pencereler Dock'un üstünde dursun", "Büyütülmüş pencereler Dock'un arkasına girmez", 54);
-        if (U.Toggle(Ui.Id("d.res"), c, st.DockReserve)) { st.DockReserve = !st.DockReserve; Changed(); }
-        c = Row(ref y, b, "Açık uygulamaları göster", "Sabitlenmemiş açık uygulamalar ayraçtan sonra görünür", 54);
+        if (st.DockMagnify)
+        {
+            float mg = st.DockMagnification;
+            if (SliderRow(ref y, b, "d.magv", "Büyütme oranı", $"{mg:0.00}×", ref mg, 1.1f, 2.4f)) { st.DockMagnification = mg; Changed(); }
+        }
+        c = Row(ref y, b, "Açılırken zıplama", "Uygulama başlarken simge zıplar", 50);
+        if (U.Toggle(Ui.Id("d.bounce"), c, st.DockBounce)) { st.DockBounce = !st.DockBounce; Changed(); }
+        c = Row(ref y, b, "Uygulama adları", "Üzerine gelince ad etiketi", 50);
+        if (U.Toggle(Ui.Id("d.labels"), c, st.DockLabels)) { st.DockLabels = !st.DockLabels; Changed(); }
+        c = Row(ref y, b, "Çalışma noktaları", "Açık uygulamaların altında nokta", 50);
+        if (U.Toggle(Ui.Id("d.dots"), c, st.DockIndicators)) { st.DockIndicators = !st.DockIndicators; Changed(); }
+
+        Section(ref y, b, "PENCERELER (DOCKDOOR)");
+        c = Row(ref y, b, "Pencere önizlemeleri", "Simgenin üzerinde durunca pencereler görünür; tıkla → geç, × → kapat", 50);
+        if (U.Toggle(Ui.Id("d.prev"), c, st.DockPreviews)) { st.DockPreviews = !st.DockPreviews; Changed(); }
+        c = Row(ref y, b, "Açık uygulamaları göster", "Sabitlenmemiş açık uygulamalar ayraçtan sonra görünür", 50);
         if (U.Toggle(Ui.Id("d.run"), c, st.DockShowRunning)) { st.DockShowRunning = !st.DockShowRunning; Changed(); }
+        c = Row(ref y, b, "Otomatik gizle", "Fare ekranın altına gelince belirir", 50);
+        if (U.Toggle(Ui.Id("d.auto"), c, st.DockAutoHide)) { st.DockAutoHide = !st.DockAutoHide; Changed(); }
+        c = Row(ref y, b, "Pencereler Dock'un üstünde dursun", "Büyütülmüş pencereler Dock'un arkasına girmez", 50);
+        if (U.Toggle(Ui.Id("d.res"), c, st.DockReserve)) { st.DockReserve = !st.DockReserve; Changed(); }
     }
 
+    void Section(ref float y, Rect b, string title)
+    {
+        G.Text(title, new Rect(b.X, y + 12, b.Width, 16), 10, Theme.Accent, FontWeight.Bold);
+        y += 34;
+        _lastY = MathF.Max(_lastY, y);
+    }
+
+    bool SliderRow(ref float y, Rect b, string key, string title, string value, ref float v, float min, float max)
+    {
+        var c = Row(ref y, b, title, value, 50);
+        float t = (v - min) / (max - min);
+        bool ch = U.SliderPlain(Ui.Id(key), new Rect(c.X + 10, c.Y, c.Width - 20, c.Height), ref t, Theme.Accent);
+        if (ch) v = min + Math.Clamp(t, 0, 1) * (max - min);
+        return ch;
+    }
     void PageSearch(Rect b)
     {
         var st = Store.Current;
