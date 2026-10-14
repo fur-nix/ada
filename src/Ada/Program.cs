@@ -74,6 +74,7 @@ public static class Program
 
         var island = new Island();
         island.Create();
+        if (Environment.GetEnvironmentVariable("ADA_BENCHLIVE") == "1") { island.BenchLive(); return 0; }
         if (openSettings) island.OpenSettings();
         if (pinPath != null) island.PinToDock(pinPath);
         if (radialPath != null) island.AddToRadial(radialPath);

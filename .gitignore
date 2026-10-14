@@ -3,4 +3,6 @@ obj/
 *.user
 .vs/
 publish/
+release/
+_snaptmp/
 .claude/

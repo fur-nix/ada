@@ -41,14 +41,22 @@ public static unsafe class MouseHook
     {
         _target = target;
         if (_hook != IntPtr.Zero) return;
-        _hook = SetWindowsHookExW(14, &Proc, Win32.GetModuleHandleW(IntPtr.Zero), 0); // WH_MOUSE_LL
-        if (_hook == IntPtr.Zero) Log.Info("Fare kancası kurulamadı");
+        // Kancayı ayrı iş parçacığında kur → geri çağrıları render'dan bağımsız, giriş gecikmez
+        HookThread.Run(() =>
+        {
+            if (_hook == IntPtr.Zero)
+            {
+                _hook = SetWindowsHookExW(14, &Proc, Win32.GetModuleHandleW(IntPtr.Zero), 0); // WH_MOUSE_LL
+                if (_hook == IntPtr.Zero) Log.Info("Fare kancası kurulamadı");
+            }
+        });
     }
 
     public static void Uninstall()
     {
-        if (_hook != IntPtr.Zero) { UnhookWindowsHookEx(_hook); _hook = IntPtr.Zero; }
         _pending = _held = false;
+        if (_hook == IntPtr.Zero) return;
+        HookThread.Run(() => { if (_hook != IntPtr.Zero) { UnhookWindowsHookEx(_hook); _hook = IntPtr.Zero; } });
     }
 
     public static POINT DownPoint => _downPt;

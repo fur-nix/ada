@@ -148,6 +148,47 @@ public sealed class Gfx : IDisposable
         return _brush;
     }
 
+    // Gradyan fırçaları önbelleği: her karede COM nesnesi yaratmak yerine renk çiftine göre yeniden kullan.
+    // Tasarım alfaları renklerde kalır (anahtara girer, 6 bit kuantize); global Alpha fırça opaklığı olarak uygulanır.
+    readonly Dictionary<long, ID2D1LinearGradientBrush> _linBrushes = new();
+    readonly Dictionary<long, ID2D1RadialGradientBrush> _radBrushes = new();
+
+    static long Key(Color4 a, Color4 b)
+    {
+        static long Q(Color4 c) =>
+            ((long)(Math.Clamp(c.R, 0, 1) * 31) << 15) | ((long)(Math.Clamp(c.G, 0, 1) * 31) << 10) |
+            ((long)(Math.Clamp(c.B, 0, 1) * 31) << 5) | (long)(Math.Clamp(c.A, 0, 1) * 31);
+        return (Q(a) << 20) | Q(b);
+    }
+
+    ID2D1LinearGradientBrush Linear(Color4 c0, Color4 c1)
+    {
+        var key = Key(c0, c1);
+        if (!_linBrushes.TryGetValue(key, out var br))
+        {
+            if (_linBrushes.Count > 400) { foreach (var v in _linBrushes.Values) v.Dispose(); _linBrushes.Clear(); }
+            using var stops = _rt.CreateGradientStopCollection(new[] { new GradientStop(0, c0), new GradientStop(1, c1) });
+            br = _rt.CreateLinearGradientBrush(new LinearGradientBrushProperties(Vector2.Zero, new Vector2(0, 1)), stops);
+            _linBrushes[key] = br;
+        }
+        br.Opacity = Alpha;
+        return br;
+    }
+
+    ID2D1RadialGradientBrush Radial(Color4 c0, Color4 c1)
+    {
+        var key = Key(c0, c1);
+        if (!_radBrushes.TryGetValue(key, out var br))
+        {
+            if (_radBrushes.Count > 200) { foreach (var v in _radBrushes.Values) v.Dispose(); _radBrushes.Clear(); }
+            using var stops = _rt.CreateGradientStopCollection(new[] { new GradientStop(0, c0), new GradientStop(1, c1) });
+            br = _rt.CreateRadialGradientBrush(new RadialGradientBrushProperties { Center = Vector2.Zero, RadiusX = 1, RadiusY = 1 }, stops);
+            _radBrushes[key] = br;
+        }
+        br.Opacity = Alpha;
+        return br;
+    }
+
     static RectangleF RF(Rect r) => new(r.X, r.Y, r.Width, r.Height);
 
     // ---------- shapes ----------
@@ -246,11 +287,8 @@ public sealed class Gfx : IDisposable
                 s.EndFigure(FigureEnd.Closed);
                 s.Close();
             }
-            using var stops = _rt.CreateGradientStopCollection(new[]
-            {
-                new GradientStop(0, c.WithA(0.32f * Alpha)), new GradientStop(1, c.WithA(0f))
-            });
-            using var lg = _rt.CreateLinearGradientBrush(new LinearGradientBrushProperties(new Vector2(0, r.Top), new Vector2(0, r.Bottom)), stops);
+            var lg = Linear(c.WithA(0.32f), c.WithA(0f));
+            lg.StartPoint = new Vector2(0, r.Top); lg.EndPoint = new Vector2(0, r.Bottom);
             _rt.FillGeometry(fill, lg);
         }
         using var line = D2.CreatePathGeometry();
@@ -266,22 +304,16 @@ public sealed class Gfx : IDisposable
 
     public void VGradientRound(Rect r, float rad, Color4 top, Color4 bottom)
     {
-        using var stops = _rt.CreateGradientStopCollection(new[]
-        {
-            new GradientStop(0, top.WithA(Alpha)), new GradientStop(1, bottom.WithA(Alpha))
-        });
-        using var lg = _rt.CreateLinearGradientBrush(new LinearGradientBrushProperties(new Vector2(0, r.Top), new Vector2(0, r.Bottom)), stops);
+        var lg = Linear(top, bottom);
+        lg.StartPoint = new Vector2(0, r.Top); lg.EndPoint = new Vector2(0, r.Bottom);
         rad = MathF.Min(rad, MathF.Min(r.Width, r.Height) / 2);
         _rt.FillRoundedRectangle(new RoundedRectangle(RF(r), rad, rad), lg);
     }
 
     public void HGradientRound(Rect r, float rad, Color4 left, Color4 right)
     {
-        using var stops = _rt.CreateGradientStopCollection(new[]
-        {
-            new GradientStop(0, left.WithA(Alpha)), new GradientStop(1, right.WithA(Alpha))
-        });
-        using var lg = _rt.CreateLinearGradientBrush(new LinearGradientBrushProperties(new Vector2(r.Left, 0), new Vector2(r.Right, 0)), stops);
+        var lg = Linear(left, right);
+        lg.StartPoint = new Vector2(r.Left, 0); lg.EndPoint = new Vector2(r.Right, 0);
         rad = MathF.Min(rad, MathF.Min(r.Width, r.Height) / 2);
         _rt.FillRoundedRectangle(new RoundedRectangle(RF(r), rad, rad), lg);
     }
@@ -289,14 +321,8 @@ public sealed class Gfx : IDisposable
     /// <summary>Yumuşak radyal ışıma (renk → şeffaf).</summary>
     public void Glow(Vector2 center, float rx, float ry, Color4 c, Rect clip, float clipRadius)
     {
-        using var stops = _rt.CreateGradientStopCollection(new[]
-        {
-            new GradientStop(0, c.WithA(Alpha)), new GradientStop(1, c.WithA(0))
-        });
-        using var rg = _rt.CreateRadialGradientBrush(new RadialGradientBrushProperties
-        {
-            Center = center, RadiusX = rx, RadiusY = ry, GradientOriginOffset = Vector2.Zero
-        }, stops);
+        var rg = Radial(c, c.WithA(0));
+        rg.Center = center; rg.RadiusX = rx; rg.RadiusY = ry;
         _rt.FillRoundedRectangle(new RoundedRectangle(RF(clip), clipRadius, clipRadius), rg);
     }
 
@@ -364,11 +390,8 @@ public sealed class Gfx : IDisposable
     /// <summary>Tek radyal elips gölge (ikon altı) — katmanlı gölgeden çok daha ucuz.</summary>
     public void SoftShadow(Vector2 center, float rx, float ry, float alpha)
     {
-        using var stops = _rt.CreateGradientStopCollection(new[]
-        {
-            new GradientStop(0, new Color4(0, 0, 0, alpha * Alpha)), new GradientStop(1, new Color4(0, 0, 0, 0))
-        });
-        using var rg = _rt.CreateRadialGradientBrush(new RadialGradientBrushProperties { Center = center, RadiusX = rx, RadiusY = ry }, stops);
+        var rg = Radial(new Color4(0, 0, 0, alpha), new Color4(0, 0, 0, 0));
+        rg.Center = center; rg.RadiusX = rx; rg.RadiusY = ry;
         _rt.FillEllipse(new Ellipse(center, rx, ry), rg);
     }
 
@@ -620,6 +643,8 @@ public sealed class Gfx : IDisposable
     public void Dispose()
     {
         foreach (var f in _formats.Values) f.Dispose();
+        foreach (var v in _linBrushes.Values) v.Dispose();
+        foreach (var v in _radBrushes.Values) v.Dispose();
         _brush.Dispose(); _roundCap.Dispose(); _rt.Dispose(); Wic.Dispose(); DW.Dispose(); D2.Dispose();
         FreeSurface();
     }

@@ -234,6 +234,8 @@ public static unsafe class Win32
     [DllImport("gdi32.dll")] public static extern IntPtr CreateDIBSection(IntPtr dc, ref BITMAPINFOHEADER bmi, uint usage, out IntPtr bits, IntPtr section, uint offset);
 
     [DllImport("kernel32.dll")] public static extern IntPtr GetModuleHandleW(IntPtr name);
+    [DllImport("kernel32.dll")] public static extern uint GetCurrentThreadId();
+    [DllImport("user32.dll")] public static extern bool PostThreadMessageW(uint thread, uint msg, IntPtr w, IntPtr l);
     [DllImport("kernel32.dll")] public static extern IntPtr GetCurrentProcess();
     [DllImport("kernel32.dll")] public static extern bool SetProcessWorkingSetSize(IntPtr proc, nint min, nint max);
     [DllImport("kernel32.dll")] public static extern bool GetSystemTimes(out long idle, out long kernel, out long user);

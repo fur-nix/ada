@@ -55,6 +55,9 @@ public sealed class AppIndex
             ScanUninstall(Microsoft.Win32.Registry.LocalMachine, @"SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall", Add);
             ScanUninstall(Microsoft.Win32.Registry.CurrentUser, @"SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall", Add);
 
+            // 3) Mağaza/UWP uygulamaları (WhatsApp, Spotify, Store sürümleri): Get-StartApps → ad + AUMID
+            ScanStoreApps(Add);
+
             list.Sort((a, b) => string.Compare(a.Name, b.Name, StringComparison.CurrentCultureIgnoreCase));
             Dispatcher.Post(() => { All = list; _loading = false; });
         });
@@ -100,6 +103,41 @@ public sealed class AppIndex
                     add(name, target, "Program");
                 }
                 catch { }
+            }
+        }
+        catch { }
+    }
+
+    /// <summary>Mağaza/UWP uygulamaları: Get-StartApps ile ad+AUMID al, shell:AppsFolder ile çalıştırılır.</summary>
+    static void ScanStoreApps(Action<string, string, string> add)
+    {
+        try
+        {
+            var psi = new System.Diagnostics.ProcessStartInfo
+            {
+                FileName = "powershell.exe",
+                // UTF-8 çıktı → Türkçe adlar bozulmaz; satır başına "Ad<TAB>AppID"
+                Arguments = "-NoProfile -NonInteractive -Command \"[Console]::OutputEncoding=[Text.Encoding]::UTF8; Get-StartApps | ForEach-Object { \\\"$($_.Name)`t$($_.AppID)\\\" }\"",
+                UseShellExecute = false,
+                RedirectStandardOutput = true,
+                CreateNoWindow = true,
+                StandardOutputEncoding = System.Text.Encoding.UTF8,
+            };
+            using var p = System.Diagnostics.Process.Start(psi);
+            if (p == null) return;
+            string output = p.StandardOutput.ReadToEnd();
+            if (!p.WaitForExit(5000)) { try { p.Kill(); } catch { } return; }
+            foreach (var line in output.Split('\n'))
+            {
+                var tab = line.IndexOf('\t');
+                if (tab <= 0) continue;
+                var name = line[..tab].Trim();
+                var aumid = line[(tab + 1)..].Trim();
+                if (name.Length == 0 || aumid.Length == 0) continue;
+                // Paketlenmiş uygulama AUMID'si her zaman "PackageFamilyName!AppId" biçimindedir (örn. ...8wekyb3d8bbwe!App).
+                // Win32 kısayolları zaten .lnk/kayıt defterinden geldi; yalnızca mağaza paketlerini ekle.
+                if (!aumid.Contains('!')) continue;
+                add(name, "shell:AppsFolder\\" + aumid, "Mağaza");
             }
         }
         catch { }
