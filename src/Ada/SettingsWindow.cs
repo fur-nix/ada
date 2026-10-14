@@ -675,7 +675,7 @@ public sealed unsafe class SettingsWindow : ISurface
         {
             0 => "Ctrl+Space · not: VS Code'daki Ctrl+Space önerisini kullanamazsın",
             1 => "Alt+Space ile her yerden açılır",
-            2 => "Windows tuşuna basınca Başlat yerine Spotlight açılır (Win+E gibi kombinasyonlar çalışmaya devam eder)",
+            2 => "Windows tuşuna basınca Başlat yerine Uygulamalar (Launcher) açılır (Win+E gibi kombinasyonlar çalışmaya devam eder)",
             _ => "Kısayol kapalı — Dock'tan ya da imleç menüsünden açabilirsin",
         };
         var c = Row(ref y, b, "Kısayol", I.SearchHotkeyOk ? hkDesc : "⚠ Bu kısayol başka bir uygulamada kullanımda", 64);

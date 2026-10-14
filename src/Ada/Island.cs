@@ -386,6 +386,23 @@ public sealed unsafe class Island
         _trimmed = false; _idleTicks = 0; // bellek kırpma tekrar çalışsın
     }
 
+    /// <summary>Canlı FPS ölçümü: ekranda sürekli çizip gerçek (UpdateLayeredWindow sonrası) fps'i log'lar.</summary>
+    public void BenchLive()
+    {
+        Expand(0);
+        var sw = System.Diagnostics.Stopwatch.StartNew();
+        int frames = 0;
+        while (sw.Elapsed.TotalSeconds < 4)
+        {
+            while (Win32.PeekMessageW(out var m, IntPtr.Zero, 0, 0, Win32.PM_REMOVE)) { Win32.TranslateMessage(ref m); Win32.DispatchMessageW(ref m); }
+            _dirty = true; U.NeedsFrame = true;
+            Frame();
+            Win32.DwmFlush();
+            frames++;
+        }
+        File.WriteAllText(Path.Combine(Store.Dir, "benchlive.txt"), $"Ekrana yansıyan: {frames / sw.Elapsed.TotalSeconds:0} fps (DwmFlush'lı)");
+    }
+
     // ================= --snap: ekran dışı görsel test =================
     public bool SnapMode;
 
@@ -401,6 +418,17 @@ public sealed unsafe class Island
                 Thread.Sleep(15);
             }
         }
+        void Bench()
+        {
+            Expand(0); for (int i = 0; i < 60; i++) Frame(); // ısın
+            var swb = System.Diagnostics.Stopwatch.StartNew();
+            const int N = 200;
+            for (int i = 0; i < N; i++) { _dirty = true; U.NeedsFrame = true; Frame(); }
+            swb.Stop();
+            double ms = swb.Elapsed.TotalMilliseconds / N;
+            File.WriteAllText(Path.Combine(dir, "bench.txt"), $"Genişletilmiş kare: {ms:0.00} ms  (~{1000/ms:0} fps üst sınır)  scale={_scale:0.00} pencere={_winW}x{_winH}px");
+        }
+
         void Shot(string name, int frames = 110)
         {
             for (int i = 0; i < frames; i++) Frame();
@@ -414,6 +442,7 @@ public sealed unsafe class Island
         Stats.Sample(); Pump(1.0); Stats.Sample();
         for (int i = 0; i < 40; i++) Stats.CpuHist[StatsService.History - 40 + i] = 0.15f + 0.25f * MathF.Abs(MathF.Sin(i * 0.35f)) + (i % 7) * 0.02f;
 
+        Bench();
         Mode = Mode.Collapsed; Shot("1-kapali");
         ShowLive(new LiveInfo("Kopyalandı", "Toplantı notları: tasarım onaylandı, v1 cuma günü çıkıyor", Glyph.Copy, Theme.Mint, false, 3, 60));
         Shot("2-canli");
@@ -591,7 +620,8 @@ public sealed unsafe class Island
                 else { Expand(Tab); BeginKeyboard(); }
                 return 0;
             case KeyboardHook.WM_WINTAP:
-                ToggleSpotlight();
+                // Windows tuşu Başlat menüsü yerine Launcher panelini (Dock "Uygulamalar") açar
+                ToggleLauncher();
                 return 0;
             case Win32.WM_TIMER:
                 OnTimer((int)w);

@@ -23,7 +23,7 @@ public static unsafe class KeyboardHook
     const uint WM_KEYDOWN = 0x100, WM_KEYUP = 0x101, WM_SYSKEYDOWN = 0x104, WM_SYSKEYUP = 0x105;
     const uint VK_LWIN = 0x5B, VK_RWIN = 0x5C, VK_CONTROL = 0x11;
     static readonly IntPtr Marker = new(0x0ADA0ADB);
-    public const uint WM_WINTAP = Win32.WM_APP + 21; // ada penceresine: yalın Win basıldı → Spotlight
+    public const uint WM_WINTAP = Win32.WM_APP + 21; // ada penceresine: yalın Win basıldı → Launcher (Uygulamalar)
 
     static IntPtr _hook, _target;
     static bool _winDown, _combo;
@@ -35,14 +35,21 @@ public static unsafe class KeyboardHook
     {
         _target = target;
         if (_hook != IntPtr.Zero) return;
-        _hook = SetWindowsHookExW(13, &Proc, Win32.GetModuleHandleW(IntPtr.Zero), 0); // WH_KEYBOARD_LL
-        if (_hook == IntPtr.Zero) Log.Info("Klavye kancası kurulamadı");
+        HookThread.Run(() =>
+        {
+            if (_hook == IntPtr.Zero)
+            {
+                _hook = SetWindowsHookExW(13, &Proc, Win32.GetModuleHandleW(IntPtr.Zero), 0); // WH_KEYBOARD_LL
+                if (_hook == IntPtr.Zero) Log.Info("Klavye kancası kurulamadı");
+            }
+        });
     }
 
     public static void Uninstall()
     {
-        if (_hook != IntPtr.Zero) { UnhookWindowsHookEx(_hook); _hook = IntPtr.Zero; }
         _winDown = _combo = false;
+        if (_hook == IntPtr.Zero) return;
+        HookThread.Run(() => { if (_hook != IntPtr.Zero) { UnhookWindowsHookEx(_hook); _hook = IntPtr.Zero; } });
     }
 
     [UnmanagedCallersOnly]
